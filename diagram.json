@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "author": "Tu Nombre",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "board-ssd1306", "id": "oled", "top": -40, "left": 150, "attrs": {} },
+    { "type": "wokwi-pushbutton", "id": "btnA", "top": 60, "left": 150, "attrs": { "color": "green", "label": "A" } },
+    { "type": "wokwi-pushbutton", "id": "btnB", "top": 60, "left": 210, "attrs": { "color": "yellow", "label": "B" } },
+    { "type": "wokwi-pushbutton", "id": "btnC", "top": 60, "left": 270, "attrs": { "color": "red", "label": "C" } }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "esp:21", "oled:SDA", "green", [ "v0" ] ],
+    [ "esp:22", "oled:SCL", "blue", [ "v0" ] ],
+    [ "esp:3V3", "oled:VCC", "red", [ "v0" ] ],
+    [ "esp:GND.1", "oled:GND", "black", [ "v0" ] ],
+    [ "esp:25", "btnA:1.l", "green", [ "v0" ] ],
+    [ "btnA:2.l", "esp:GND.2", "black", [ "v0" ] ],
+    [ "esp:26", "btnB:1.l", "yellow", [ "v0" ] ],
+    [ "btnB:2.l", "esp:GND.2", "black", [ "v0" ] ],
+    [ "esp:27", "btnC:1.l", "red", [ "v0" ] ],
+    [ "btnC:2.l", "esp:GND.2", "black", [ "v0" ] ]
+  ]
+}
