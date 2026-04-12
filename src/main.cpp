@@ -22,6 +22,7 @@ enum EstadosMascota
   ESTADO_IDLE,           // Reposo/Pantalla principal
   ESTADO_MENU,           // Navegando por opciones
   ESTADO_SUBMENU_COMIDA, // Submenú de comida
+  ESTADO_SUBMENU_STATS,  // Submenú de estadísticas
   ESTADO_ACCION,         // Comiendo, jugando, etc.
   ESTADO_EVOLUCION,      // Momento de la transformación
   ESTADO_MUERTE,         // La mascota ha muerto
@@ -49,11 +50,13 @@ struct MascotaData
   uint8_t health_status;        // Estado de salud (0 a 4)
   uint8_t poop_counter;         // Contador de cacas (0 a 4)
   uint8_t discipline;           // Nivel de disciplina (0 a 100)
+  uint8_t race;                 // Raza o tipo específico (0 a 9)
 
   // Ritmos biológicos (¡NUEVO!)
-  uint32_t hunger_interval;    // Cuánto tarda en bajar el hambre
-  uint32_t happiness_interval; // Cuánto tarda en bajar la felicidad
-  uint32_t poop_interval;      // Cuánto tarda en hacerse caca
+  uint32_t hunger_interval;     // Cuánto tarda en bajar el hambre
+  uint32_t happiness_interval;  // Cuánto tarda en bajar la felicidad
+  uint32_t poop_interval;       // Cuánto tarda en hacerse caca
+  bool poop_sickness_triggered; // Seguro anticiclos de enfermedad
 
   // Cronómetros
   uint32_t last_poop_time;
@@ -128,23 +131,24 @@ void actualizarPantalla()
     display.drawBitmap(menu_x[menu_index], menu_y[menu_index], menu_icons[menu_index], 16, 16, WHITE);
   }
 
-  // --- DIBUJAR LAS CACAS (Agrupadas a la derecha y animadas) ---
-  if (pet.estado_actual != ESTADO_GAME)
+  // --- ¡NUEVO! DIBUJO AUTOMÁTICO DEL ICONO DE ATENCIÓN ---
+  if (pet.needs_attention == true)
   {
-    // Seleccionamos el frame según la animación global
-    const unsigned char *frame_caca = frame_animation ? epd_bitmap_poop_1 : epd_bitmap_poop_0;
+    // Dibujamos directamente el icono 7 en su posición, sea cual sea el estado del menú
+    display.drawBitmap(menu_x[7], menu_y[7], menu_icons[7], 16, 16, WHITE);
+  }
 
-    // Posiciones en el lado derecho (X entre 85 y 110, Y apoyadas en la línea)
-    // Caca 1 (Abajo Derecha)
+  // --- DIBUJAR LAS CACAS (Agrupadas a la derecha y animadas) ---
+  // Solo visibles en IDLE y ACCIONES para no manchar menús
+  if (pet.estado_actual == ESTADO_IDLE || pet.estado_actual == ESTADO_ACCION)
+  {
+    const unsigned char *frame_caca = frame_animation ? epd_bitmap_poop_1 : epd_bitmap_poop_0;
     if (pet.poop_counter >= 1)
       display.drawBitmap(105, 30, frame_caca, 16, 16, WHITE);
-    // Caca 2 (Abajo Izquierda del grupo)
     if (pet.poop_counter >= 2)
       display.drawBitmap(87, 30, frame_caca, 16, 16, WHITE);
-    // Caca 3 (Arriba Derecha del grupo)
     if (pet.poop_counter >= 3)
       display.drawBitmap(105, 18, frame_caca, 16, 16, WHITE);
-    // Caca 4 (Arriba Izquierda del grupo)
     if (pet.poop_counter >= 4)
       display.drawBitmap(87, 18, frame_caca, 16, 16, WHITE);
   }
@@ -152,66 +156,67 @@ void actualizarPantalla()
   // EL CONTENIDO DINÁMICO (Depende del estado)
   if (pet.estado_actual == ESTADO_IDLE)
   {
-    if (frame_animation == false)
+    // Si está enfermo, usamos el sprite "sad"
+    if (pet.health_status == 1)
     {
-      display.drawBitmap(48, 16, epd_bitmap_a1_1, 32, 32, WHITE);
+      // Usamos el frame triste alternando con el latido
+      display.drawBitmap(48, 16, frame_animation ? epd_bitmap_a1_1_sad : epd_bitmap_a1_2, 32, 32, WHITE);
     }
+    // Si está sano, usamos los frames normales
     else
     {
-      display.drawBitmap(48, 16, epd_bitmap_a1_2, 32, 32, WHITE);
+      display.drawBitmap(48, 16, frame_animation ? epd_bitmap_a1_2 : epd_bitmap_a1_1, 32, 32, WHITE);
     }
   }
   else if (pet.estado_actual == ESTADO_ACCION)
   {
-    if (pet.current_action == 'l') // Si la acción es limpiar
+    long elapsed = millis() - pet.action_start;
+    int fase = elapsed / 1000; // 0, 1 o 2
+
+    if (pet.current_action == 'n') // Animación: Nope (Negación)
     {
-      // 1. Dibujamos la mascota con la cara feliz alternando con la normal
+      const unsigned char *nope_frame = frame_animation ? epd_bitmap_a1_1_nope_1 : epd_bitmap_a1_1_nope_0;
+      display.drawBitmap(48, 16, nope_frame, 32, 32, WHITE);
+    }
+    else if (pet.current_action == 'm') // Animación: Medicina
+    {
+      // Icono de cura a la izquierda (fases 0, 1, 2)
+      const unsigned char *heal_icon = (fase == 0) ? epd_bitmap_heal_0 : (fase == 1 ? epd_bitmap_heal_1 : epd_bitmap_heal_2);
+      display.drawBitmap(24, 24, heal_icon, 16, 16, WHITE);
+      // Mascota: triste hasta que se cura al final (fase 2)
+      const unsigned char *p_med = (fase < 2) ? epd_bitmap_a1_1_sad : epd_bitmap_a1_1_happy;
+      display.drawBitmap(48, 16, p_med, 32, 32, WHITE);
+    }
+    else if (pet.current_action == 'l') // Animación: Limpiar
+    {
       const unsigned char *pet_frame = frame_animation ? epd_bitmap_a1_1_happy : epd_bitmap_a1_1;
       display.drawBitmap(48, 16, pet_frame, 32, 32, WHITE);
-
-      // 2. Calculamos la posición X de la escoba
-      // Transcurren 3000ms. Queremos ir desde X=128 (fuera por la derecha)
-      // hasta X=-18 (fuera por la izquierda, ya que mide 18px). Distancia total = 146px.
-      long elapsed = millis() - pet.action_start;
       int sweep_x = 128 - (elapsed * 146 / 3000);
-
-      // 3. Dibujamos el barredor
       display.drawBitmap(sweep_x, 16, epd_bitmap_clean_lines, 18, 32, WHITE);
     }
-    else if (pet.current_action == 'c' || pet.current_action == 's')
+    else if (pet.current_action == 'c' || pet.current_action == 's') // Animación: Comer
     {
-      // 1. Calculamos en qué segundo de la animación estamos (0, 1 o 2)
-      long elapsed = millis() - pet.action_start;
-      int fase_comida = elapsed / 1000;
-
       const unsigned char *pet_frame;
       const unsigned char *food_frame;
 
-      // 2. Sincronizamos la boca de la mascota y el estado de la comida
-      if (fase_comida == 0)
+      if (fase == 0)
       {
-        pet_frame = epd_bitmap_a1_1_eat_0;  // 1. Boca cerrada
-        food_frame = epd_bitmap_food_eat_0; // Comida completa
+        pet_frame = epd_bitmap_a1_1_eat_0;
+        food_frame = (pet.current_action == 'c') ? epd_bitmap_food_eat_0 : epd_bitmap_snack_eat_0;
       }
-      else if (fase_comida == 1)
+      else if (fase == 1)
       {
-        pet_frame = epd_bitmap_a1_1_eat_1;  // 2. Boca abierta (¡Ñam!)
-        food_frame = epd_bitmap_food_eat_1; // Comida a medias
+        pet_frame = epd_bitmap_a1_1_eat_1;
+        food_frame = (pet.current_action == 'c') ? epd_bitmap_food_eat_1 : epd_bitmap_snack_eat_1;
       }
       else
       {
-        pet_frame = epd_bitmap_a1_1_eat_0;  // 3. Boca cerrada
-        food_frame = epd_bitmap_crumbs_eat; // Migajas
+        pet_frame = epd_bitmap_a1_1_eat_0;
+        food_frame = epd_bitmap_crumbs_eat;
       }
 
-      // 3. Dibujamos los elementos en pantalla
       display.drawBitmap(48, 16, pet_frame, 32, 32, WHITE);
       display.drawBitmap(24, 24, food_frame, 16, 16, WHITE);
-    }
-    else
-    {
-      // El cuadrado genérico para las demás acciones (comer, curar...)
-      display.fillRect(56, 24, 16, 16, WHITE);
     }
   }
   else if (pet.estado_actual == ESTADO_SUBMENU_COMIDA)
@@ -233,6 +238,64 @@ void actualizarPantalla()
 
     // Dibujamos el selector animado con tu sprite
     display.drawBitmap(selector_x, 24, epd_bitmap_selector_0, 16, 16, WHITE);
+  }
+
+  else if (pet.estado_actual == ESTADO_SUBMENU_STATS)
+  {
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+
+    if (submenu_index == 0) // PÁGINA 0: Edad y Peso
+    {
+      display.setCursor(16, 16);
+      display.print("EDAD: ");
+      display.print(pet.stage);
+
+      display.setCursor(16, 36);
+      display.print("PESO: ");
+      display.print(pet.weight);
+      display.print("g");
+    }
+    else if (submenu_index == 1) // PÁGINA 1: Hambre
+    {
+      display.setCursor(16, 16);
+      display.print("HAMBRE:");
+
+      // Dibujamos 4 corazones (separados por 20 píxeles para que respiren)
+      for (int i = 0; i < 4; i++)
+      {
+        if (i < pet.hunger)
+        {
+          // Corazón Lleno
+          display.drawBitmap(16 + (i * 20), 32, epd_bitmap_fullheart_0, 16, 16, WHITE);
+        }
+        else
+        {
+          // Corazón Vacío
+          display.drawBitmap(16 + (i * 20), 32, epd_bitmap_emptyheart_0, 16, 16, WHITE);
+        }
+      }
+    }
+    else if (submenu_index == 2) // PÁGINA 2: Felicidad
+    {
+      display.setCursor(16, 16);
+      display.print("FELICIDAD:");
+
+      // Dibujamos 4 corazones
+      for (int i = 0; i < 4; i++)
+      {
+        if (i < pet.happiness)
+        {
+          // Corazón Lleno
+          display.drawBitmap(16 + (i * 20), 32, epd_bitmap_fullheart_0, 16, 16, WHITE);
+        }
+        else
+        {
+          // Corazón Vacío
+          display.drawBitmap(16 + (i * 20), 32, epd_bitmap_emptyheart_0, 16, 16, WHITE);
+        }
+      }
+    }
   }
 
   else if (pet.estado_actual == ESTADO_GAME)
@@ -351,7 +414,6 @@ void setup()
 void loop()
 {
   uint32_t horaActual = millis();
-  char comando = 0;
 
   // --- VARIABLES PARA EL BOTÓN A ---
   static bool estadoAnteriorA = HIGH; // 'static' recuerda el valor entre vueltas del loop
@@ -381,7 +443,8 @@ void loop()
       if (lecturaA == LOW) // Solo movemos el cursor si el cambio fue Hacia Abajo (Pulsar)
       {
         menu_index++;
-        if (menu_index > 7)
+        // LIMITAMOS A 6: Así el icono 7 (Atención) nunca se selecciona
+        if (menu_index > 6)
         {
           menu_index = 0;
         }
@@ -399,22 +462,80 @@ void loop()
     {
       if (lecturaB == LOW && menu_index != -1)
       {
-        // Asignamos la letra del comando según la cajita en la que estemos
-        if (menu_index == 0)
+        if (menu_index == 0) // COMIDA
         {
-          pet.estado_actual = ESTADO_SUBMENU_COMIDA;
-          submenu_index = 0; // Empezamos apuntando a la opción 0 (Comida)
-          menu_index = -1;   // Apagamos el cursor del menú principal
-          actualizarPantalla();
+          if (pet.health_status == 1)
+          { // ¡NUEVO! Comprobamos ANTES de entrar
+            pet.current_action = 'n';
+            pet.estado_actual = ESTADO_ACCION;
+            pet.action_start = horaActual;
+          }
+          else
+          {
+            pet.estado_actual = ESTADO_SUBMENU_COMIDA;
+            submenu_index = 0;
+          }
         }
-        else if (menu_index == 1)
-          comando = 'g'; // 1: Juego
-        else if (menu_index == 2)
-          comando = 'l'; // 2: Baño
-        else if (menu_index == 3)
-          comando = 'm'; // 3: Medicina
-        else if (menu_index == 4)
-          comando = 'd'; // 4 (Inf-Izq): Disciplina
+        else if (menu_index == 1) // JUEGO
+        {
+          if (pet.health_status == 1)
+          { // Enfermo = Nope
+            pet.current_action = 'n';
+            pet.estado_actual = ESTADO_ACCION;
+            pet.action_start = horaActual;
+          }
+          else
+          {
+            pet.estado_actual = ESTADO_GAME;
+            pet.game_round = 1;
+            pet.game_wins = 0;
+            pet.current_number = random(1, 9);
+            pet.game_phase = 0;
+            pet.action_start = horaActual;
+            Serial.println(">>> ¡Entrando al juego de números! 🎮");
+          }
+        }
+        else if (menu_index == 2) // BAÑO
+        {
+          if (pet.poop_counter > 0)
+          {
+            pet.poop_counter = 0;
+            pet.poop_sickness_triggered = false; // ¡Reseteamos el seguro al limpiar!
+            pet.current_action = 'l';
+            pet.estado_actual = ESTADO_ACCION;
+            pet.action_start = horaActual;
+          }
+        }
+        else if (menu_index == 3) // MEDICINA
+        {
+          if (pet.health_status > 0)
+          {
+            pet.health_status = 0;
+
+            pet.needs_attention = false;
+            pet.mistake_processed = false;
+
+            pet.current_action = 'm';
+            pet.estado_actual = ESTADO_ACCION;
+            pet.action_start = horaActual;
+          }
+        }
+        else if (menu_index == 4) // DISCIPLINA
+        {
+          if (pet.needs_attention && pet.hunger > 1 && pet.happiness > 1)
+          {
+            pet.discipline = min((int)pet.discipline + 25, 100);
+            pet.needs_attention = false;
+            pet.current_action = 'd';
+            pet.estado_actual = ESTADO_ACCION;
+            pet.action_start = horaActual;
+          }
+        }
+        else if (menu_index == 5) // ESTADÍSTICAS
+        {
+          pet.estado_actual = ESTADO_SUBMENU_STATS;
+          submenu_index = 0; // Usamos esta misma variable para saber en qué "página" estamos
+        }
 
         menu_index = -1; // Apagamos el cursor tras elegir
         actualizarPantalla();
@@ -477,9 +598,10 @@ void loop()
       return;
     }
 
-    if (pet.poop_counter == 4 && pet.health_status == 0)
+    if (pet.poop_counter == 4 && pet.health_status == 0 && !pet.poop_sickness_triggered)
     {
       pet.health_status = 1;
+      pet.poop_sickness_triggered = true; // Se activa el seguro
       Serial.println("¡La mascota está enferma por la suciedad! 🤢");
     }
 
@@ -528,8 +650,8 @@ void loop()
         Serial.println("¡AVISO: La mascota te necesita! 🚨");
       }
 
-      // DISCIPLINA
-      if (random(0, 100) < 10)
+      // DISCIPLINA (0.1%)
+      if (random(0, 1000) < 1)
       {
         if (pet.hunger > 1 && pet.happiness > 1)
         {
@@ -545,141 +667,13 @@ void loop()
       tiempoUltimoLatido = horaActual;
     }
 
-    // 6. ENTRADA DE COMANDOS (Teclado o Botones)
-    if (Serial.available() > 0)
-    {
-      comando = Serial.read();
-    }
-
-    // 7. EJECUCIÓN DEL COMANDO (Sea del teclado o del Botón B)
-    if (comando == 'c')
-    {
-      if (pet.health_status == 1)
-      {
-        Serial.println(">>> ¡La mascota está enferma y se niega a comer! 😷");
-      }
-      else if (pet.hunger < 4 && pet.health_status == 0)
-      {
-        pet.hunger++;
-        pet.weight++;
-        pet.needs_attention = false;
-        pet.mistake_processed = false;
-        pet.current_action = 'c';
-        pet.estado_actual = ESTADO_ACCION;
-        pet.action_start = horaActual;
-        actualizarPantalla();
-        Serial.println(">>> ¡Le has dado de comer! 🍎");
-      }
-      else
-      {
-        Serial.println(">>> La mascota no quiere comer ahora. 🍽️");
-      }
-    }
-
-    if (comando == 's')
-    {
-      if (pet.health_status == 1)
-      {
-        Serial.println(">>> ¡La mascota está enferma y se niega a comer snacks! 😷");
-      }
-      else if (pet.happiness < 4)
-        pet.happiness++;
-      pet.weight += 2;
-      pet.needs_attention = false;
-      pet.mistake_processed = false;
-      pet.current_action = 's';
-      pet.estado_actual = ESTADO_ACCION;
-      pet.action_start = horaActual;
-      actualizarPantalla();
-      Serial.println(">>> ¡Le has dado un snack! 🍬");
-    }
-
-    if (comando == 'l')
-    {
-      if (pet.poop_counter > 0)
-      {
-        pet.poop_counter = 0;
-        pet.current_action = 'l';
-        pet.estado_actual = ESTADO_ACCION;
-        pet.action_start = horaActual;
-        actualizarPantalla();
-        Serial.println(">>> ¡Has limpiado la caca! 🧹");
-      }
-      else
-      {
-        Serial.println(">>> No hay caca para limpiar. 🧼");
-      }
-    }
-
-    if (comando == 'm')
-    {
-      if (pet.health_status > 0)
-      {
-        pet.health_status = 0;
-        pet.current_action = 'm';
-        pet.estado_actual = ESTADO_ACCION;
-        pet.action_start = horaActual;
-        actualizarPantalla();
-        Serial.println(">>> ¡Has curado a la mascota! 💉");
-      }
-      else
-      {
-        Serial.println(">>> La mascota no está enferma. 🩺");
-      }
-    }
-
-    if (comando == 'd')
-    {
-      if (pet.needs_attention == true)
-      {
-        if (pet.hunger > 1 && pet.happiness > 1)
-        {
-          pet.discipline += 25;
-          if (pet.discipline > 100)
-            pet.discipline = 100;
-          pet.needs_attention = false;
-          pet.current_action = 'd';
-          pet.estado_actual = ESTADO_ACCION;
-          pet.action_start = horaActual;
-          actualizarPantalla();
-          Serial.println(">>> Has aumentado la disciplina. 📏");
-        }
-        else
-        {
-          Serial.println(">>> La mascota necesita atención, no disciplina.");
-        }
-      }
-      else
-      {
-        Serial.println(">>> La mascota no necesita disciplina ahora. 🧸");
-      }
-    }
-
-    if (comando == 'g')
-    {
-      pet.estado_actual = ESTADO_GAME;
-      pet.game_round = 1;
-      pet.game_wins = 0;
-      pet.current_number = random(1, 9);
-      pet.game_phase = 0; // splash inicial del juego
-      pet.action_start = horaActual;
-
-      while (Serial.available() > 0)
-        Serial.read();
-      Serial.println(">>> ¡Entrando al juego de números! 🎮");
-    }
-
-    break;
-
   case ESTADO_MENU:
     break;
 
   case ESTADO_ACCION:
     if (horaActual - pet.action_start >= 3000)
     {
-      // --- SALIDA DEL ESTADO (Esto se queda exactamente como lo tenías) ---
-      while (Serial.available() > 0)
-        Serial.read();
+      // --- SALIDA DEL ESTADO ---
       pet.estado_actual = ESTADO_IDLE;
       actualizarPantalla();
 
@@ -735,20 +729,70 @@ void loop()
       estadoAnteriorA = lecturaA;
     }
 
-    // --- LECTURA BOTÓN B (Confirmar) ---
+    // --- LECTURA BOTÓN B (Confirmar selección de comida) ---
     lecturaB = digitalRead(BTN_B);
     if (lecturaB != estadoAnteriorB && (horaActual - ultimoToqueB > 50))
     {
       if (lecturaB == LOW)
       {
-        comando = (submenu_index == 0) ? 'c' : 's'; // Asignamos el comando final
-        // Ya no cambiamos el estado aquí, la lógica de 'c' y 's' más abajo
-        // se encarga de pasarlo a ESTADO_ACCION
-        pet.estado_actual = ESTADO_IDLE;
+        // 1. PRIMERO: ¿Está enferma la mascota? 🤢
+        if (pet.health_status == 1)
+        {
+          // Si está enfermo, no importa lo que elijas: la acción será "Nope"
+          pet.current_action = 'n';          // 'n' activará los sprites de negación
+          pet.estado_actual = ESTADO_ACCION; // Saltamos a la animación
+          pet.action_start = horaActual;     // Empezamos a contar los 3 segundos
+        }
+        // 2. SI ESTÁ SANA: Miramos qué ha elegido 🍎🍬
+        else
+        {
+          if (submenu_index == 0) // Ha elegido COMIDA
+          {
+            // Solo come si no está totalmente lleno (máximo 4)
+            if (pet.hunger < 4)
+            {
+              pet.current_action = 'c'; // Acción de comer bol
+              pet.hunger++;             // Aumentamos saciedad
+              pet.weight++;             // El alimento base sube 1g
+
+              pet.needs_attention = false;   // Si le das de comer, se le quita el aviso de atención (si lo tenía)
+              pet.mistake_processed = false; // Reseteamos el proceso de care mistake para que no cuente como fallo si se le da de comer tras tener hambre 0
+
+              pet.estado_actual = ESTADO_ACCION;
+              pet.action_start = horaActual;
+            }
+            else
+            {
+              // Si está lleno, simplemente cancelamos y volvemos a la pantalla principal
+              pet.current_action = 'n';          // 'n' activará los sprites de negación
+              pet.estado_actual = ESTADO_ACCION; // Saltamos a la animación
+              pet.action_start = horaActual;     // Empezamos a contar los 3 segundos
+            }
+          }
+          else if (submenu_index == 1) // Ha elegido SNACK
+          {
+            // El snack siempre lo acepta si está sano, ¡es un capricho!
+            pet.current_action = 's'; // Acción de comer snack
+            if (pet.happiness < 4)
+              pet.happiness++; // Sube felicidad
+            pet.weight += 2;   // Pero el azúcar engorda más (2g)
+
+            pet.needs_attention = false;
+            pet.mistake_processed = false;
+
+            pet.estado_actual = ESTADO_ACCION;
+            pet.action_start = horaActual;
+          }
+        }
+
+        // 2. FINALIZACIÓN
+        menu_index = -1;      // Quitamos el cursor del menú por si acaso
+        actualizarPantalla(); // Refrescamos para que desaparezca el menú y empiece el dibujo
       }
       ultimoToqueB = horaActual;
       estadoAnteriorB = lecturaB;
     }
+
     // --- LECTURA BOTÓN C (Cancelar/Volver) ---
     lecturaC = digitalRead(BTN_C);
     if (lecturaC != estadoAnteriorC && (horaActual - ultimoToqueC > 50))
@@ -763,18 +807,50 @@ void loop()
     }
     break;
 
+  case ESTADO_SUBMENU_STATS:
+    // --- Botón A: Pasar de página (0, 1, 2) ---
+    lecturaA = digitalRead(BTN_A);
+    if (lecturaA != estadoAnteriorA && (horaActual - ultimoToqueA > 50))
+    {
+      if (lecturaA == LOW)
+      {
+        submenu_index++;
+        if (submenu_index > 2)
+          submenu_index = 0; // Si pasa de la pág 2, vuelve a la 0
+        actualizarPantalla();
+      }
+      ultimoToqueA = horaActual;
+      estadoAnteriorA = lecturaA;
+    }
+
+    // --- Botón C: Salir al menú principal ---
+    lecturaC = digitalRead(BTN_C);
+    if (lecturaC != estadoAnteriorC && (horaActual - ultimoToqueC > 50))
+    {
+      if (lecturaC == LOW)
+      {
+        pet.estado_actual = ESTADO_IDLE;
+        actualizarPantalla();
+      }
+      ultimoToqueC = horaActual;
+      estadoAnteriorC = lecturaC;
+    }
+    // (Opcional: puedes hacer que el botón B también sirva para salir o pasar página si quieres)
+    break;
+
   case ESTADO_EVOLUCION:
     break;
 
   case ESTADO_MUERTE:
-    if (Serial.available() > 0)
+    // --- LÓGICA DE REINICIO POR BOTONES (A + C) ---
+    lecturaA = digitalRead(BTN_A);
+    lecturaC = digitalRead(BTN_C);
+
+    // Faltaba este 'if':
+    if (lecturaA == LOW && lecturaC == LOW)
     {
-      comando = Serial.read();
-      if (comando == 'r')
-      {
-        Serial.println(">>> Reiniciando el juego... 🔄");
-        setup();
-      }
+      Serial.println(">>> REINICIO TOTAL: Combinación A+C detectada. 🔄");
+      setup();
     }
     break;
 
@@ -814,6 +890,10 @@ void loop()
           pet.happiness++;
           if (pet.weight > 0)
             pet.weight--;
+
+          pet.needs_attention = false;
+          pet.mistake_processed = false;
+
           Serial.println(">>> ¡Juego Ganado! 🏆");
         }
         pet.estado_actual = ESTADO_IDLE;
