@@ -656,6 +656,17 @@ void loop()
   if (pet.estado_actual != ESTADO_RELOJ && pet.estado_actual != ESTADO_BOOT && (horaActual - ultimo_minuto_ms >= 60000))
   {
     reloj_m++;
+
+    // NUEVO: Contador para el autoguardado
+    static uint8_t minutos_para_guardar = 0;
+    minutos_para_guardar++;
+
+    if (minutos_para_guardar >= 60)
+    { // <-- Ajusta este número (ej: 10 = cada 10 minutos)
+      guardarPartida();
+      minutos_para_guardar = 0;
+    }
+
     if (reloj_m >= 60)
     {
       reloj_m = 0;
@@ -774,49 +785,6 @@ void loop()
       estadoAnteriorC = lecturaC;
     }
     break;
-
-    // --- CONTINUAR PARTIDA (Botón A) ---
-    if (lecturaA == LOW && estadoAnteriorA == HIGH && (horaActual - ultimoToqueA > 50))
-    {
-      Serial.println(">>> Cargando partida...");
-      memoria.begin("tama_save", true);
-      memoria.getBytes("pet_data", &pet, sizeof(MascotaData));
-      reloj_h = memoria.getUInt("reloj_h", 12);
-      reloj_m = memoria.getUInt("reloj_m", 0);
-      memoria.end();
-
-      // Sincronizamos todos los relojes internos con el millis() actual.
-      // Para la mascota, el tiempo que la consola estuvo apagada "no ha existido".
-      pet.last_hunger_time = horaActual;
-      pet.last_happiness_time = horaActual;
-      pet.last_poop_time = horaActual;
-      ultimo_minuto_ms = horaActual;
-      pet.action_start = horaActual;
-      if (pet.sickness_start > 0)
-        pet.sickness_start = horaActual;
-      if (pet.starvation_start > 0)
-        pet.starvation_start = horaActual;
-
-      pet.estado_actual = ESTADO_IDLE; // ¡A jugar!
-      actualizarPantalla();
-    }
-
-    // --- BORRAR PARTIDA (Botón C) ---
-    if (lecturaC == LOW && estadoAnteriorC == HIGH && (horaActual - ultimoToqueC > 50))
-    {
-      Serial.println(">>> Borrando datos de guardado...");
-      display.clearDisplay();
-      display.setCursor(30, 28);
-      display.print("BORRANDO...");
-      display.display();
-      delay(1000);
-
-      memoria.begin("tama_save", false);
-      memoria.clear(); // Destruye todos los datos
-      memoria.end();
-
-      ESP.restart(); // Reiniciamos la placa para que nazca un bebé nuevo
-    }
 
     ultimoToqueA = horaActual;
     estadoAnteriorA = lecturaA;
