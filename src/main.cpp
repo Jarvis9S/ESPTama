@@ -19,6 +19,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // Mapa de estados
 enum EstadosMascota
 {
+  ESTADO_RELOJ,          // Pantalla de reloj
   ESTADO_IDLE,           // Reposo/Pantalla principal
   ESTADO_MENU,           // Navegando por opciones
   ESTADO_SUBMENU_COMIDA, // Submenú de comida
@@ -51,12 +52,17 @@ struct MascotaData
   uint8_t poop_counter;         // Contador de cacas (0 a 4)
   uint8_t discipline;           // Nivel de disciplina (0 a 100)
   uint8_t race;                 // Raza o tipo específico (0 a 9)
+  uint8_t snack_count;          // Cuenta los snacks consecutivos
+  uint32_t sickness_start;      // Cuándo empezó a estar enfermo
+  uint32_t starvation_start;    // Cuándo llegó el hambre a 0
+  bool is_sleeping;             // Si la mascota está durmiendo
+  bool is_light_on;             // Si la luz está encendida
 
   // Ritmos biológicos (¡NUEVO!)
-  uint32_t hunger_interval;     // Cuánto tarda en bajar el hambre
-  uint32_t happiness_interval;  // Cuánto tarda en bajar la felicidad
-  uint32_t poop_interval;       // Cuánto tarda en hacerse caca
-  bool poop_sickness_triggered; // Seguro anticiclos de enfermedad
+  uint32_t hunger_interval;    // Cuánto tarda en bajar el hambre
+  uint32_t happiness_interval; // Cuánto tarda en bajar la felicidad
+  uint32_t poop_interval;      // Cuánto tarda en hacerse caca
+  uint32_t dirt_accumulation;  // Medidor de toxicidad ambiental (P1/P2)
 
   // Cronómetros
   uint32_t last_poop_time;
@@ -90,6 +96,12 @@ uint32_t tiempoUltimoLatido = 0;
 const uint32_t INTERVALO = 1000; // 1 segundo para refrescar la consola
 
 MascotaData pet;
+
+// --- RELOJ DEL SISTEMA ---
+uint8_t reloj_h = 12;          // Horas (0-23)
+uint8_t reloj_m = 0;           // Minutos (0-59)
+uint32_t ultimo_minuto_ms = 0; // Cronómetro para que pasen los minutos
+uint8_t reloj_fase = 0;        // 0 = Ajustando Horas, 1 = Ajustando Minutos
 
 bool frame_animation = false;
 int8_t menu_index = -1; // -1 significa que no hay nada seleccionado
@@ -131,7 +143,7 @@ void actualizarPantalla()
     display.drawBitmap(menu_x[menu_index], menu_y[menu_index], menu_icons[menu_index], 16, 16, WHITE);
   }
 
-  // --- ¡NUEVO! DIBUJO AUTOMÁTICO DEL ICONO DE ATENCIÓN ---
+  //  DIBUJO AUTOMÁTICO DEL ICONO DE ATENCIÓN
   if (pet.needs_attention == true)
   {
     // Dibujamos directamente el icono 7 en su posición, sea cual sea el estado del menú
@@ -154,18 +166,51 @@ void actualizarPantalla()
   }
 
   // EL CONTENIDO DINÁMICO (Depende del estado)
-  if (pet.estado_actual == ESTADO_IDLE)
+  if (pet.estado_actual == ESTADO_RELOJ)
   {
-    // Si está enfermo, usamos el sprite "sad"
-    if (pet.health_status == 1)
+    display.setTextSize(1);
+    display.setTextColor(WHITE);
+    display.setCursor(20, 16);
+    display.print("AJUSTAR RELOJ");
+
+    display.setTextSize(2);
+    display.setCursor(32, 36);
+
+    // Añadimos un 0 delante si es menor de 10 (ej: 09:05)
+    if (reloj_h < 10)
+      display.print("0");
+    display.print(reloj_h);
+    display.print(":");
+    if (reloj_m < 10)
+      display.print("0");
+    display.print(reloj_m);
+
+    // Subrayamos lo que estamos editando
+    if (reloj_fase == 0)
+      display.drawFastHLine(32, 54, 22, WHITE); // Subraya Horas
+    else
+      display.drawFastHLine(68, 54, 22, WHITE); // Subraya Minutos
+  }
+  else if (pet.estado_actual == ESTADO_IDLE)
+  {
+    if (pet.is_light_on == false)
     {
-      // Usamos el frame triste alternando con el latido
-      display.drawBitmap(48, 16, frame_animation ? epd_bitmap_a1_1_sad : epd_bitmap_a1_2, 32, 32, WHITE);
+      // DIBUJO DORMIDO Y A OSCURAS
+      display.setCursor(45, 30);
+      display.setTextSize(1);
+      display.print("Zzz...");
     }
-    // Si está sano, usamos los frames normales
     else
     {
-      display.drawBitmap(48, 16, frame_animation ? epd_bitmap_a1_2 : epd_bitmap_a1_1, 32, 32, WHITE);
+      // DIBUJO NORMAL O ENFERMO
+      if (pet.health_status == 1)
+      {
+        display.drawBitmap(48, 16, frame_animation ? epd_bitmap_a1_1_sad : epd_bitmap_a1_2, 32, 32, WHITE);
+      }
+      else
+      {
+        display.drawBitmap(48, 16, frame_animation ? epd_bitmap_a1_2 : epd_bitmap_a1_1, 32, 32, WHITE);
+      }
     }
   }
   else if (pet.estado_actual == ESTADO_ACCION)
@@ -296,6 +341,19 @@ void actualizarPantalla()
         }
       }
     }
+    else if (submenu_index == 3) // PÁGINA 3: Disciplina
+    {
+      display.setCursor(16, 16);
+      display.print("DISCIPLINA:");
+
+      // Dibujamos una barra horizontal (marco)
+      display.drawRect(16, 32, 96, 12, WHITE);
+
+      // Calculamos el ancho del relleno según el porcentaje (0 a 100)
+      // Como el rect mide 96px, 96 * disciplina / 100 nos da el ancho exacto
+      int fill_width = (pet.discipline * 96) / 100;
+      display.fillRect(16, 32, fill_width, 12, WHITE);
+    }
   }
 
   else if (pet.estado_actual == ESTADO_GAME)
@@ -354,6 +412,16 @@ void actualizarPantalla()
       }
       display.drawBitmap(48, 16, pet_frame, 32, 32, WHITE);
     }
+    else if (pet.estado_actual == ESTADO_MUERTE)
+    {
+      // Dibujamos la tumba centrada (48, 16 es la misma posicíon que la mascota)
+      display.drawBitmap(48, 16, epd_bitmap_tomb_0, 32, 32, WHITE);
+
+      // Opcional: Un pequeño texto de despedida
+      display.setTextSize(1);
+      display.setCursor(35, 54);
+      display.print("GAME OVER");
+    }
   }
 
   // Líneas separadoras de la interfaz
@@ -383,7 +451,9 @@ void setup()
   pet.needs_attention = false;
   pet.poop_counter = 0;
   pet.discipline = 0;
-  pet.estado_actual = ESTADO_IDLE;
+  pet.is_sleeping = false;
+  pet.is_light_on = true;
+  pet.estado_actual = ESTADO_RELOJ; // Empezamos en la pantalla del reloj
 
   // Inicializamos los relojes
   pet.last_poop_time = millis();
@@ -391,9 +461,14 @@ void setup()
   pet.last_happiness_time = millis();
 
   // Configuramos la velocidad del metabolismo del bebé (en ms)
-  pet.hunger_interval = 20000;    // Baja stats cada 20s
-  pet.happiness_interval = 25000; // Baja stats cada 25s
-  pet.poop_interval = 15000;      // Caca cada 15s
+  pet.hunger_interval = 60000;    // Baja stats cada 20s
+  pet.happiness_interval = 90000; // Baja stats cada 25s
+  pet.poop_interval = 120000;     // Caca cada 15s
+
+  pet.snack_count = 0;
+  pet.sickness_start = 0;
+  pet.starvation_start = 0;
+  pet.dirt_accumulation = 0;
 
   // Configuración de botones
   pinMode(BTN_A, INPUT_PULLUP);
@@ -414,6 +489,24 @@ void setup()
 void loop()
 {
   uint32_t horaActual = millis();
+  // --- MOTOR DEL RELOJ REAL ---
+  // Si estamos jugando (no en la pantalla de ajuste)
+  if (pet.estado_actual != ESTADO_RELOJ && (horaActual - ultimo_minuto_ms >= 60000))
+  {
+    reloj_m++;
+    if (reloj_m >= 60)
+    {
+      reloj_m = 0;
+      reloj_h++;
+      if (reloj_h >= 24)
+        reloj_h = 0;
+    }
+    ultimo_minuto_ms = horaActual;
+    Serial.print(">>> Hora del sistema: ");
+    Serial.print(reloj_h);
+    Serial.print(":");
+    Serial.println(reloj_m);
+  }
 
   // --- VARIABLES PARA EL BOTÓN A ---
   static bool estadoAnteriorA = HIGH; // 'static' recuerda el valor entre vueltas del loop
@@ -465,7 +558,7 @@ void loop()
         if (menu_index == 0) // COMIDA
         {
           if (pet.health_status == 1)
-          { // ¡NUEVO! Comprobamos ANTES de entrar
+          { // Comprobamos ANTES de entrar
             pet.current_action = 'n';
             pet.estado_actual = ESTADO_ACCION;
             pet.action_start = horaActual;
@@ -500,7 +593,7 @@ void loop()
           if (pet.poop_counter > 0)
           {
             pet.poop_counter = 0;
-            pet.poop_sickness_triggered = false; // ¡Reseteamos el seguro al limpiar!
+            pet.dirt_accumulation = 0; // ¡NUEVO! Limpiar purifica la toxicidad de la habitación
             pet.current_action = 'l';
             pet.estado_actual = ESTADO_ACCION;
             pet.action_start = horaActual;
@@ -514,6 +607,8 @@ void loop()
 
             pet.needs_attention = false;
             pet.mistake_processed = false;
+
+            pet.snack_count = 0;
 
             pet.current_action = 'm';
             pet.estado_actual = ESTADO_ACCION;
@@ -536,7 +631,21 @@ void loop()
           pet.estado_actual = ESTADO_SUBMENU_STATS;
           submenu_index = 0; // Usamos esta misma variable para saber en qué "página" estamos
         }
+        else if (menu_index == 6) // LUZ
+        {
+          pet.is_light_on = !pet.is_light_on; // Alternar luz
 
+          if (pet.is_light_on == false)
+          {
+            pet.is_sleeping = true; // Si apagas, se duerme
+            // Opcional: Apagar alarma si estaba pidiendo que apagaran la luz
+            pet.needs_attention = false;
+          }
+          else
+          {
+            pet.is_sleeping = false; // Si enciendes, se despierta
+          }
+        }
         menu_index = -1; // Apagamos el cursor tras elegir
         actualizarPantalla();
       }
@@ -598,27 +707,51 @@ void loop()
       return;
     }
 
-    if (pet.poop_counter == 4 && pet.health_status == 0 && !pet.poop_sickness_triggered)
-    {
-      pet.health_status = 1;
-      pet.poop_sickness_triggered = true; // Se activa el seguro
-      Serial.println("¡La mascota está enferma por la suciedad! 🤢");
-    }
-
+    // 4.1. CHEQUEO DE LLAMADA Y CARE MISTAKES
     if (pet.hunger == 0 || pet.happiness == 0)
     {
-      if (pet.needs_attention == false)
+      // Solo encendemos la alarma si no lo hemos castigado ya por esta bajada
+      if (pet.needs_attention == false && pet.mistake_processed == false)
       {
         pet.attention_start = horaActual;
+        pet.needs_attention = true;
       }
-      pet.needs_attention = true;
 
-      // Care Mistakes si pasan 10s ignorándola
-      if (horaActual - pet.attention_start >= 10000 && pet.mistake_processed == false)
+      // Si pasan 15 MINUTOS (900000 ms) sin hacerle caso...
+      if (pet.needs_attention == true && (horaActual - pet.attention_start >= 900000))
       {
         pet.care_mistakes++;
-        pet.mistake_processed = true;
+        pet.needs_attention = false;  // ¡SE APAGA LA LUZ! (El jugador ha fallado)
+        pet.mistake_processed = true; // Evita que se sumen fallos infinitos
+        Serial.println(">>> Care Mistake añadido. La luz se apagó. 😔");
       }
+    }
+
+    // 4.2. CHEQUEOS LETALES (Inanición y Enfermedad Prolongada)
+    // Inanición (12 horas = 43200000 ms)
+    if (pet.hunger == 0)
+    {
+      if (pet.starvation_start == 0)
+        pet.starvation_start = horaActual;
+      else if (horaActual - pet.starvation_start >= 43200000)
+        pet.estado_actual = ESTADO_MUERTE;
+    }
+    else
+    {
+      pet.starvation_start = 0; // Si come, se salva
+    }
+
+    // Enfermedad Prolongada (6 horas = 21600000 ms)
+    if (pet.health_status == 1)
+    {
+      if (pet.sickness_start == 0)
+        pet.sickness_start = horaActual;
+      else if (horaActual - pet.sickness_start >= 21600000)
+        pet.estado_actual = ESTADO_MUERTE;
+    }
+    else
+    {
+      pet.sickness_start = 0; // Si le das medicina, se salva
     }
 
     // 5. RELOJ DE INTERFAZ (Consola cada 1 segundo)
@@ -657,6 +790,28 @@ void loop()
         {
           pet.needs_attention = true;
           Serial.println("¡Berrinche! La mascota quiere atención sin motivo. 😤");
+        }
+      }
+
+      // --- SISTEMA DE TOXICIDAD POR CACA (P1/P2) ---
+      // Cada segundo, sumamos toxicidad según el número de cacas.
+      // 1 caca = +1 punto/segundo. 4 cacas = +4 puntos/segundo.
+      if (pet.poop_counter > 0 && pet.health_status == 0)
+      {
+        pet.dirt_accumulation += pet.poop_counter;
+
+        // Límite: 3600 puntos.
+        // Equivale a aguantar 1 caca durante 1 hora (60 mins),
+        // o 4 cacas simultáneas durante 15 minutos.
+        if (pet.dirt_accumulation >= 3600)
+        {
+          pet.health_status = 1;           // Enferma
+          pet.sickness_start = horaActual; // Arranca el reloj de la muerte
+          Serial.println(">>> ¡La mascota ha enfermado por culpa de la suciedad acumulada! 🤢");
+
+          // OJO: NO reseteamos dirt_accumulation. Si el jugador le da medicina
+          // pero no limpia la pantalla, el límite se superará al segundo siguiente
+          // y volverá a enfermar. ¡Igual que el Tamagotchi real!
         }
       }
 
@@ -758,6 +913,8 @@ void loop()
               pet.needs_attention = false;   // Si le das de comer, se le quita el aviso de atención (si lo tenía)
               pet.mistake_processed = false; // Reseteamos el proceso de care mistake para que no cuente como fallo si se le da de comer tras tener hambre 0
 
+              pet.snack_count = 0;
+
               pet.estado_actual = ESTADO_ACCION;
               pet.action_start = horaActual;
             }
@@ -776,6 +933,17 @@ void loop()
             if (pet.happiness < 4)
               pet.happiness++; // Sube felicidad
             pet.weight += 2;   // Pero el azúcar engorda más (2g)
+
+            pet.snack_count++; // Sumamos un snack a la cuenta
+
+            // Si come 5 snacks seguidos en un corto periodo, enferma
+            if (pet.snack_count >= 5)
+            {
+              pet.health_status = 1;
+              pet.sickness_start = horaActual;
+              pet.snack_count = 0; // Reseteamos la cuenta al enfermar
+              Serial.println("¡Se ha empachado de dulces y ha enfermado! 🤢");
+            }
 
             pet.needs_attention = false;
             pet.mistake_processed = false;
@@ -815,8 +983,8 @@ void loop()
       if (lecturaA == LOW)
       {
         submenu_index++;
-        if (submenu_index > 2)
-          submenu_index = 0; // Si pasa de la pág 2, vuelve a la 0
+        if (submenu_index > 3)
+          submenu_index = 0; // Si pasa de la pág 3, vuelve a la 0
         actualizarPantalla();
       }
       ultimoToqueA = horaActual;
@@ -842,15 +1010,87 @@ void loop()
     break;
 
   case ESTADO_MUERTE:
-    // --- LÓGICA DE REINICIO POR BOTONES (A + C) ---
+    // Leemos los botones A y C para el reinicio
     lecturaA = digitalRead(BTN_A);
     lecturaC = digitalRead(BTN_C);
 
-    // Faltaba este 'if':
     if (lecturaA == LOW && lecturaC == LOW)
     {
       Serial.println(">>> REINICIO TOTAL: Combinación A+C detectada. 🔄");
-      setup();
+
+      // Feedback visual rápido antes de reiniciar
+      display.clearDisplay();
+      display.setCursor(30, 28);
+      display.print("REINICIANDO...");
+      display.display();
+      delay(500); // Una pausa breve para que se lea el mensaje
+
+      setup(); // Volvemos al estado inicial
+    }
+    break;
+
+  case ESTADO_RELOJ:
+    // BOTÓN A: Incrementar número
+    lecturaA = digitalRead(BTN_A);
+    if (lecturaA != estadoAnteriorA && (horaActual - ultimoToqueA > 50))
+    {
+      if (lecturaA == LOW)
+      {
+        if (reloj_fase == 0)
+        {
+          reloj_h++;
+          if (reloj_h > 23)
+            reloj_h = 0;
+        }
+        else
+        {
+          reloj_m++;
+          if (reloj_m > 59)
+            reloj_m = 0;
+        }
+        actualizarPantalla();
+      }
+      ultimoToqueA = horaActual;
+      estadoAnteriorA = lecturaA;
+    }
+
+    // BOTÓN B: Confirmar / Siguiente
+    lecturaB = digitalRead(BTN_B);
+    if (lecturaB != estadoAnteriorB && (horaActual - ultimoToqueB > 50))
+    {
+      if (lecturaB == LOW)
+      {
+        if (reloj_fase == 0)
+        {
+          reloj_fase = 1; // Pasamos a minutos
+        }
+        else
+        {
+          // Confirmamos minutos y EMPEZAMOS EL JUEGO
+          ultimo_minuto_ms = horaActual;     // Arranca el reloj real
+          pet.birth_time = horaActual;       // Nace en este instante
+          pet.last_hunger_time = horaActual; // Sincronizamos metaboilsmo
+          pet.last_happiness_time = horaActual;
+          pet.last_poop_time = horaActual;
+          pet.estado_actual = ESTADO_IDLE;
+        }
+        actualizarPantalla();
+      }
+      ultimoToqueB = horaActual;
+      estadoAnteriorB = lecturaB;
+    }
+
+    // BOTÓN C: Volver atrás
+    lecturaC = digitalRead(BTN_C);
+    if (lecturaC != estadoAnteriorC && (horaActual - ultimoToqueC > 50))
+    {
+      if (lecturaC == LOW && reloj_fase == 1)
+      {
+        reloj_fase = 0; // Volvemos a editar horas
+        actualizarPantalla();
+      }
+      ultimoToqueC = horaActual;
+      estadoAnteriorC = lecturaC;
     }
     break;
 
