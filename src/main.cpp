@@ -17,6 +17,27 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 #define BTN_B 12
 #define BTN_C 14
 
+// --- AUDIO ---
+#define PIN_BUZZER 25
+
+enum SonidosUI
+{
+  SND_NAVEGAR,
+  SND_CONFIRMAR,
+  SND_CANCELAR,
+  SND_ERROR,
+  SND_LLAMADA,
+
+  SND_COMER,          // "Ñam" corto
+  SND_CURAR,          // Pitido mágico
+  SND_ACIERTO,        // Acierto en minijuego
+  SND_FALLO,          // Fallo en minijuego
+  SND_VICTORIA,       // Ganar el minijuego / Evolucionar
+  SND_DERROTA,        // Perder el minijuego
+  SND_EVOLUCION_TICK, // Destello de evolución
+  SND_MUERTE          // Tono fúnebre
+};
+
 // TAMAGOTCHI PDP - ALPHA 0.2
 
 // Mapa de estados
@@ -101,7 +122,17 @@ struct MascotaData
   uint8_t game_phase;
   bool last_guess_won;
   uint8_t game_ticks;
+
+  // Posición en la pantalla
+  int16_t x; // Posición horizontal
+  int16_t y; // Posición vertical
 };
+
+// --- CONSTANTES DE METABOLISMO BASE (1.0x) ---
+// MODO DEBUG: Base = 1 minuto (60000 ms)
+const uint32_t BASE_HUNGER = 3600000;    // 1 hora
+const uint32_t BASE_HAPPINESS = 3600000; // 1 hora
+const uint32_t BASE_POOP = 7200000;      // 2 horas
 
 // Paso del tiempo de la interfaz
 uint32_t tiempoUltimoLatido = 0;
@@ -119,6 +150,7 @@ uint32_t ultimo_minuto_ms = 0; // Cronómetro para que pasen los minutos
 uint8_t reloj_fase = 0;        // 0 = Ajustando Horas, 1 = Ajustando Minutos
 
 bool frame_animation = false;
+uint8_t idle_frame_index = 0; // Para ciclos de 3 frames
 int8_t menu_index = -1; // -1 significa que no hay nada seleccionado
 int8_t submenu_index = 0;
 
@@ -194,15 +226,15 @@ void actualizarPantalla()
   // EL CONTENIDO DINÁMICO (Depende del estado)
   if (pet.estado_actual == ESTADO_RELOJ)
   {
-    display.setTextSize(1);
-    display.setTextColor(WHITE);
-    display.setCursor(20, 16);
-    display.print("AJUSTAR RELOJ");
-
     display.setTextSize(2);
-    display.setCursor(32, 36);
+    display.setTextColor(WHITE);
 
-    // Añadimos un 0 delante si es menor de 10 (ej: 09:05)
+    // Título "RELOJ" (5 letras = 60px) -> X = 34
+    display.setCursor(34, 0);
+    display.print("RELOJ");
+
+    display.setCursor(34, 32);
+
     if (reloj_h < 10)
       display.print("0");
     display.print(reloj_h);
@@ -211,11 +243,11 @@ void actualizarPantalla()
       display.print("0");
     display.print(reloj_m);
 
-    // Subrayamos lo que estamos editando
+    // Subrayamos horas o minutos (ajustado al nuevo tamaño)
     if (reloj_fase == 0)
-      display.drawFastHLine(32, 54, 22, WHITE); // Subraya Horas
+      display.drawFastHLine(34, 50, 22, WHITE); // Subraya Horas
     else
-      display.drawFastHLine(68, 54, 22, WHITE); // Subraya Minutos
+      display.drawFastHLine(70, 50, 22, WHITE); // Subraya Minutos
   }
   else if (pet.estado_actual == ESTADO_VER_RELOJ)
   {
@@ -236,14 +268,19 @@ void actualizarPantalla()
   }
   else if (pet.estado_actual == ESTADO_BOOT)
   {
-    display.setTextSize(1);
+    display.setTextSize(2);
     display.setTextColor(WHITE);
-    display.setCursor(12, 16);
-    display.print("PARTIDA GUARDADA");
 
-    // Opciones
-    display.setCursor(8, 40);
-    display.print("A:SEGUIR  C:BORRAR");
+    // Título centrado (8 letras = 96px) -> X = 16
+    display.setCursor(16, 0);
+    display.print("GUARDADO");
+
+    // Opciones directas
+    display.setCursor(10, 24);
+    display.print("A:SEGUIR");
+
+    display.setCursor(10, 44);
+    display.print("C:BORRAR");
   }
 
   // EL CONTENIDO DINÁMICO (Depende del estado)
@@ -283,15 +320,51 @@ void actualizarPantalla()
         // Despierto y normal (Sano o Enfermo)
         if (pet.health_status == 1)
         {
-          display.drawBitmap(48, 16, frame_animation ? epd_bitmap_a1_1_sad : epd_bitmap_a1_2, 32, 32, WHITE);
+          // Mascota enferma (Usa pet.x y pet.y que el motor ha fijado en el centro)
+          display.drawBitmap(pet.x, pet.y, frame_animation ? epd_bitmap_a1_1_sad : epd_bitmap_a1_2, 32, 32, WHITE);
 
-          // --- CALAVERA FLOTANTE ---
-          int y_sick = 16 + (frame_animation ? -2 : 0);
-          display.drawBitmap(85, y_sick, epd_bitmap_sick_0, 16, 16, WHITE);
+          // --- CALAVERA A LA IZQUIERDA ---
+          // Aleada de la zona de cacas (X=25) y atada a la Y de la mascota
+          int y_sick = pet.y + (frame_animation ? -2 : 0);
+          display.drawBitmap(25, y_sick, epd_bitmap_sick_0, 16, 16, WHITE);
         }
         else
         {
-          display.drawBitmap(48, 16, frame_animation ? epd_bitmap_a1_2 : epd_bitmap_a1_1, 32, 32, WHITE);
+          if (pet.stage == 0)
+          {
+            // --- DIBUJO DEL HUEVO ---
+            // Alternamos entre los dos sprites que has creado
+            const unsigned char *egg_frame = frame_animation ? epd_bitmap_egg1_1 : epd_bitmap_egg1_0;
+
+            // Le damos un bote vertical de 2 píxeles para que parezca que palpita
+            int y_huevo = 16 + (frame_animation ? 0 : 2);
+            display.drawBitmap(48, y_huevo, egg_frame, 32, 32, WHITE);
+          }
+          else 
+          {
+            // --- DIBUJO DINÁMICO POR TIPO ---
+            const unsigned char* sprite_actual;
+
+            if (pet.type == 2) // EL TIZÓN
+            {
+              if (idle_frame_index == 0) sprite_actual = epd_bitmap_a2_1;
+              else if (idle_frame_index == 1) sprite_actual = epd_bitmap_a2_2;
+              else sprite_actual = epd_bitmap_a2_3;
+            }
+            else if (pet.type == 3) // EL BEBOTE
+            {
+              if (idle_frame_index == 0) sprite_actual = epd_bitmap_a3_1;
+              else if (idle_frame_index == 1) sprite_actual = epd_bitmap_a3_2;
+              else sprite_actual = epd_bitmap_a3_3;
+            }
+            else // Tipo 1 (Rayito) o Bebé (Stage 1)
+            {
+              // Estos siguen usando 2 frames por ahora
+              sprite_actual = frame_animation ? epd_bitmap_a1_2 : epd_bitmap_a1_1;
+            }
+
+            display.drawBitmap(pet.x, pet.y, sprite_actual, 32, 32, WHITE);
+          }
         }
       }
     }
@@ -304,21 +377,30 @@ void actualizarPantalla()
     if (pet.current_action == 'n') // Animación: Nope (Negación)
     {
       const unsigned char *nope_frame = frame_animation ? epd_bitmap_a1_1_nope_1 : epd_bitmap_a1_1_nope_0;
-      display.drawBitmap(48, 16, nope_frame, 32, 32, WHITE);
+      display.drawBitmap(48, 16, nope_frame, 32, 32, WHITE); // Vuelve al centro
     }
     else if (pet.current_action == 'm') // Animación: Medicina
     {
-      // Icono de cura a la izquierda (fases 0, 1, 2)
+      // Icono de cura a la izquierda
       const unsigned char *heal_icon = (fase == 0) ? epd_bitmap_heal_0 : (fase == 1 ? epd_bitmap_heal_1 : epd_bitmap_heal_2);
       display.drawBitmap(24, 24, heal_icon, 16, 16, WHITE);
-      // Mascota: triste hasta que se cura al final (fase 2)
+
+      // Mascota en el centro
       const unsigned char *p_med = (fase < 2) ? epd_bitmap_a1_1_sad : epd_bitmap_a1_1_happy;
       display.drawBitmap(48, 16, p_med, 32, 32, WHITE);
     }
-    else if (pet.current_action == 'l') // Animación: Limpiar
+    else if (pet.current_action == 'l') // Animación: Limpiar (¡LA ÚNICA RELATIVA!)
     {
-      const unsigned char *pet_frame = frame_animation ? epd_bitmap_a1_1_happy : epd_bitmap_a1_1;
-      display.drawBitmap(48, 16, pet_frame, 32, 32, WHITE);
+      // La mascota se queda donde estaba (pet.x, pet.y) y se pone feliz al final
+      const unsigned char *pet_frame;
+      if (elapsed < 2000)
+        pet_frame = frame_animation ? epd_bitmap_a1_2 : epd_bitmap_a1_1;
+      else
+        pet_frame = frame_animation ? epd_bitmap_a1_1_happy : epd_bitmap_a1_2;
+
+      display.drawBitmap(pet.x, pet.y, pet_frame, 32, 32, WHITE);
+
+      // La escoba cruza toda la pantalla barriendo
       int sweep_x = 128 - (elapsed * 146 / 3000);
       display.drawBitmap(sweep_x, 16, epd_bitmap_clean_lines, 18, 32, WHITE);
     }
@@ -343,15 +425,16 @@ void actualizarPantalla()
         food_frame = epd_bitmap_crumbs_eat;
       }
 
+      // Mascota al centro, comida a su izquierda (Clásico)
       display.drawBitmap(48, 16, pet_frame, 32, 32, WHITE);
       display.drawBitmap(24, 24, food_frame, 16, 16, WHITE);
     }
     else if (pet.current_action == 'd') // Animación: Disciplina (Regañar)
     {
-      // La mascota se queda quieta y triste mientras recibe la bronca
+      // Mascota al centro, triste
       display.drawBitmap(48, 16, epd_bitmap_a1_1_sad, 32, 32, WHITE);
 
-      // El icono de disciplina flota/rebota sobre ella
+      // El icono de disciplina rebota a la derecha
       int y_disc = 16 + (frame_animation ? -2 : 0);
       display.drawBitmap(85, y_disc, epd_bitmap_menu16_discipline_1, 16, 16, WHITE);
     }
@@ -373,78 +456,58 @@ void actualizarPantalla()
       selector_x = 64;
     }
 
-    // Dibujamos el selector animado con tu sprite
-    display.drawBitmap(selector_x, 24, epd_bitmap_selector_0, 16, 16, WHITE);
+    // Dibujamos el selector animado
+    // Si frame_animation es true, desplazamos la flecha 2px para que "vibre"
+    int offset_anim = frame_animation ? 0 : 2;
+    display.drawBitmap(selector_x, 24 + offset_anim, epd_bitmap_selector_0, 16, 16, WHITE);
   }
 
   else if (pet.estado_actual == ESTADO_SUBMENU_STATS)
   {
-    display.setTextSize(1);
+    display.setTextSize(2);
     display.setTextColor(WHITE);
 
     if (submenu_index == 0) // PÁGINA 0: Edad y Peso
     {
-      display.setCursor(16, 16);
+      display.setCursor(8, 16);
       display.print("EDAD: ");
       display.print(pet.age_days);
 
-      display.setCursor(16, 36);
+      display.setCursor(8, 40);
       display.print("PESO: ");
       display.print(pet.weight);
       display.print("g");
     }
     else if (submenu_index == 1) // PÁGINA 1: Hambre
     {
-      display.setCursor(16, 16);
-      display.print("HAMBRE:");
+      display.setCursor(28, 8);
+      display.print("HAMBRE");
 
-      // Dibujamos 4 corazones (separados por 20 píxeles para que respiren)
       for (int i = 0; i < 4; i++)
       {
-        if (i < pet.hunger)
-        {
-          // Corazón Lleno
-          display.drawBitmap(16 + (i * 20), 32, epd_bitmap_fullheart_0, 16, 16, WHITE);
-        }
-        else
-        {
-          // Corazón Vacío
-          display.drawBitmap(16 + (i * 20), 32, epd_bitmap_emptyheart_0, 16, 16, WHITE);
-        }
+        const unsigned char *heart = (i < pet.hunger) ? epd_bitmap_fullheart_0 : epd_bitmap_emptyheart_0;
+        display.drawBitmap(24 + (i * 20), 32, heart, 16, 16, WHITE);
       }
     }
     else if (submenu_index == 2) // PÁGINA 2: Felicidad
     {
-      display.setCursor(16, 16);
-      display.print("FELICIDAD:");
+      display.setCursor(34, 8);
+      display.print("FELIZ");
 
-      // Dibujamos 4 corazones
       for (int i = 0; i < 4; i++)
       {
-        if (i < pet.happiness)
-        {
-          // Corazón Lleno
-          display.drawBitmap(16 + (i * 20), 32, epd_bitmap_fullheart_0, 16, 16, WHITE);
-        }
-        else
-        {
-          // Corazón Vacío
-          display.drawBitmap(16 + (i * 20), 32, epd_bitmap_emptyheart_0, 16, 16, WHITE);
-        }
+        const unsigned char *heart = (i < pet.happiness) ? epd_bitmap_fullheart_0 : epd_bitmap_emptyheart_0;
+        display.drawBitmap(24 + (i * 20), 32, heart, 16, 16, WHITE);
       }
     }
     else if (submenu_index == 3) // PÁGINA 3: Disciplina
     {
-      display.setCursor(16, 16);
-      display.print("DISCIPLINA:");
+      display.setCursor(34, 8);
+      display.print("DISC.");
 
-      // Dibujamos una barra horizontal (marco)
-      display.drawRect(16, 32, 96, 12, WHITE);
-
-      // Calculamos el ancho del relleno según el porcentaje (0 a 100)
-      // Como el rect mide 96px, 96 * disciplina / 100 nos da el ancho exacto
+      display.drawRect(16, 32, 96, 16, WHITE); // Barra más gruesa
       int fill_width = (pet.discipline * 96) / 100;
-      display.fillRect(16, 32, fill_width, 12, WHITE);
+      display.fillRect(16, 32, fill_width, 16, WHITE);
     }
   }
 
@@ -453,10 +516,11 @@ void actualizarPantalla()
     // Fase 0: SPLASH SCREEN
     if (pet.game_phase == 0)
     {
-      display.setTextSize(1);
+      display.setTextSize(2);
       display.setTextColor(WHITE);
-      display.setCursor(32, 28);
-      display.print("GAME START");
+      // "A JUGAR!" (8 letras = 96px) -> X = 16
+      display.setCursor(16, 24);
+      display.print("A JUGAR!");
     }
     // Fase 1: ESPERANDO INPUT
     else if (pet.game_phase == 1)
@@ -507,44 +571,60 @@ void actualizarPantalla()
   }
   else if (pet.estado_actual == ESTADO_EVOLUCION)
   {
-    const unsigned char *evolve_frames[] = {
-        epd_bitmap_evolve_0, epd_bitmap_evolve_1, epd_bitmap_evolve_2,
-        epd_bitmap_evolve_3, epd_bitmap_evolve_4, epd_bitmap_evolve_5};
-
-    int secuencia[] = {0, 1, 2, 3, 4, 5, 4, 5, 4, 5};
-    int paso_actual = pet.game_ticks;
-
-    display.setTextSize(1);
-    display.setCursor(20, 54);
-
-    if (paso_actual < 10)
+    if (pet.stage == 1)
     {
-      // FASE A: Secuencia de luz (Del tick 0 al 9 = 10 segundos)
-      int frame_idx = secuencia[paso_actual];
-      display.print("EVOLUCIONANDO...");
-      display.drawBitmap(48, 16, evolve_frames[frame_idx], 32, 32, WHITE);
+      // --- ANIMACIÓN A: ROMPER EL HUEVO (De stage 0 a stage 1) ---
+      const unsigned char *break_frames[] = {
+          epd_bitmap_eggbreak_0, epd_bitmap_eggbreak_1,
+          epd_bitmap_eggbreak_2, epd_bitmap_eggbreak_3};
+
+      if (pet.game_ticks < 10)
+      {
+        // Dividimos los 10 segundos de tensión entre los 4 frames de grietas
+        int frame_idx = 0;
+        if (pet.game_ticks > 2)
+          frame_idx = 1;
+        if (pet.game_ticks > 5)
+          frame_idx = 2;
+        if (pet.game_ticks > 7)
+          frame_idx = 3;
+
+        display.drawBitmap(48, 16, break_frames[frame_idx], 32, 32, WHITE);
+      }
+      else
+      {
+        // ¡TA-DA! Nace el bebé
+        const unsigned char *happy_frame = frame_animation ? epd_bitmap_a1_1_happy : epd_bitmap_a1_2;
+        display.drawBitmap(48, 16, happy_frame, 32, 32, WHITE);
+      }
     }
     else
     {
-      // Ahora usamos el frame_animation global para que salte al ritmo exacto del juego
-      const unsigned char *happy_frame = frame_animation ? epd_bitmap_a1_1_happy : epd_bitmap_a1_2;
-      display.drawBitmap(48, 16, happy_frame, 32, 32, WHITE);
+      // --- ANIMACIÓN B: CRECIMIENTO NORMAL (Bebé a Niño, etc) ---
+      const unsigned char *evolve_frames[] = {
+          epd_bitmap_evolve_0, epd_bitmap_evolve_1, epd_bitmap_evolve_2,
+          epd_bitmap_evolve_3, epd_bitmap_evolve_4, epd_bitmap_evolve_5};
+
+      int secuencia[] = {0, 1, 2, 3, 4, 5, 4, 5, 4, 5};
+
+      if (pet.game_ticks < 10)
+      {
+        int frame_idx = secuencia[pet.game_ticks];
+        display.drawBitmap(48, 16, evolve_frames[frame_idx], 32, 32, WHITE);
+      }
+      else
+      {
+        // ¡TA-DA! Muestra la nueva mascota
+        const unsigned char *happy_frame = frame_animation ? epd_bitmap_a1_1_happy : epd_bitmap_a1_2;
+        display.drawBitmap(48, 16, happy_frame, 32, 32, WHITE);
+      }
     }
   }
   else if (pet.estado_actual == ESTADO_MUERTE)
   {
     // Dibujamos la tumba centrada (48, 16 es la misma posicíon que la mascota)
     display.drawBitmap(48, 16, epd_bitmap_tomb_0, 32, 32, WHITE);
-
-    // Opcional: Un pequeño texto de despedida
-    display.setTextSize(1);
-    display.setCursor(35, 54);
-    display.print("GAME OVER");
   }
-
-  // Líneas separadoras de la interfaz
-  // display.drawLine(0, 17, 128, 17, WHITE);
-  // display.drawLine(0, 46, 128, 46, WHITE);
 
   display.display(); // Enviamos todo a la pantalla a la vez
 }
@@ -562,10 +642,23 @@ void animacionArrastre(bool haciaReloj)
     // --- DIBUJAR ESTADO SEGÚN LA LUZ ---
     if (pet.is_light_on)
     {
-      // Luz ON: Dibujamos mascota y cacas
-      const unsigned char *pet_frame = pet.health_status == 1 ? epd_bitmap_a1_1_sad : epd_bitmap_a1_1;
-      display.drawBitmap(48, 16 + y_idle, pet_frame, 32, 32, WHITE);
+      // --- MASCOTA: Ahora usa pet.x y pet.y ---
+      const unsigned char *pet_frame;
+      if (pet.health_status == 1)
+        pet_frame = epd_bitmap_a1_1_sad;
+      else if (pet.is_sleeping)
+        pet_frame = epd_bitmap_a1_1_sleep_0;
+      else {
+        // Elegimos el frame base según el tipo
+        if (pet.type == 2) pet_frame = epd_bitmap_a2_1;
+        else if (pet.type == 3) pet_frame = epd_bitmap_a3_1;
+        else pet_frame = epd_bitmap_a1_1;
+      }
 
+      // Dibujamos en su posición actual + el desplazamiento de la animación
+      display.drawBitmap(pet.x, pet.y + y_idle, pet_frame, 32, 32, WHITE);
+
+      // --- CACAS: Mantienen su X pero se desplazan en Y ---
       const unsigned char *frame_caca = epd_bitmap_poop_0;
       if (pet.poop_counter >= 1)
         display.drawBitmap(105, 30 + y_idle, frame_caca, 16, 16, WHITE);
@@ -578,15 +671,14 @@ void animacionArrastre(bool haciaReloj)
     }
     else
     {
-      // Luz OFF: ¿Está durmiendo o despierto?
+      // Luz OFF: Usamos pet.x y pet.y para los ojos o el sueño en la oscuridad
       if (pet.is_sleeping)
       {
-        display.drawBitmap(48, 16 + y_idle, epd_bitmap_sleep_lightoff_0, 32, 32, WHITE);
+        display.drawBitmap(pet.x, pet.y + y_idle, epd_bitmap_sleep_lightoff_0, 32, 32, WHITE);
       }
       else
       {
-        // Solo dibujamos los ojos asomando en la oscuridad
-        display.drawBitmap(48, 16 + y_idle, epd_bitmap_eyes_dark_0, 32, 32, WHITE);
+        display.drawBitmap(pet.x, pet.y + y_idle, epd_bitmap_eyes_dark_0, 32, 32, WHITE);
       }
     }
 
@@ -607,6 +699,115 @@ void animacionArrastre(bool haciaReloj)
   }
 }
 
+void reproducirSonido(SonidosUI tipo)
+{
+  switch (tipo)
+  {
+  case SND_NAVEGAR:
+    tone(PIN_BUZZER, 2000, 30);
+    break;
+  case SND_CONFIRMAR:
+    tone(PIN_BUZZER, 1500, 80);
+    break;
+  case SND_CANCELAR:
+    tone(PIN_BUZZER, 800, 80);
+    break;
+  case SND_ERROR:
+    tone(PIN_BUZZER, 150, 300);
+    break;
+  case SND_LLAMADA:
+    for (int rep = 0; rep < 3; rep++) // Repetimos la melodía 3 veces
+    {
+      for (int i = 0; i < 3; i++) // Los 6 bips (3 pares)
+      {
+        tone(PIN_BUZZER, 2500, 50);
+        delay(80);
+        tone(PIN_BUZZER, 2000, 50);
+        delay(80);
+      }
+
+      // Añadimos una pausa de medio segundo entre repeticiones
+      // pero solo si no es la última (para no esperar al final)
+      if (rep < 2)
+        delay(500);
+    }
+    break;
+
+  case SND_COMER:
+    tone(PIN_BUZZER, 1800, 40);
+    break; // Agudo y muy corto
+  case SND_CURAR:
+    tone(PIN_BUZZER, 2200, 150);
+    break; // Brillante
+  case SND_ACIERTO:
+    tone(PIN_BUZZER, 1200, 100);
+    break; // Positivo
+  case SND_FALLO:
+    tone(PIN_BUZZER, 300, 150);
+    break; // Grave
+  case SND_VICTORIA:
+    tone(PIN_BUZZER, 2000, 400);
+    break; // Largo y agudo
+  case SND_DERROTA:
+    tone(PIN_BUZZER, 200, 400);
+    break; // Largo y grave
+  case SND_EVOLUCION_TICK:
+    tone(PIN_BUZZER, 3000, 50);
+    break; // Chispa eléctrica
+  case SND_MUERTE:
+    tone(PIN_BUZZER, 100, 800);
+    break; // Muy grave y prolongado
+  }
+}
+
+void aplicarGenetica(uint8_t nuevo_tipo)
+{
+  pet.type = nuevo_tipo;
+
+  switch (nuevo_tipo)
+  {
+  case 1: // EL RAYITO (Niño Bueno)
+    pet.hunger_interval = BASE_HUNGER * 1.2;
+    pet.happiness_interval = BASE_HAPPINESS * 1.2;
+    pet.poop_interval = BASE_POOP * 1.0;
+    pet.weight = 10;
+    pet.sleep_hour = 20;
+    pet.wake_hour = 8;
+    Serial.println(">>> Genética Aplicada: El Rayito (1.2x)");
+    break;
+
+  case 2: // EL TIZÓN (Niño Asustadizo)
+    pet.hunger_interval = BASE_HUNGER * 1.5;
+    pet.happiness_interval = BASE_HAPPINESS * 0.7;
+    pet.poop_interval = BASE_POOP * 1.0;
+    pet.weight = 8;
+    pet.sleep_hour = 21;
+    pet.wake_hour = 9;
+    Serial.println(">>> Genética Aplicada: El Tizón (H:1.5x F:0.7x)");
+    break;
+
+  case 3: // EL BEBOTE (Glotón)
+    pet.hunger_interval = BASE_HUNGER * 0.6;
+    pet.happiness_interval = BASE_HAPPINESS * 1.5;
+    pet.poop_interval = BASE_POOP * 0.6;
+    pet.weight = 15;
+    pet.sleep_hour = 22;
+    pet.wake_hour = 10;
+    Serial.println(">>> Genética Aplicada: El Bebote (0.6x)");
+    break;
+
+  case 4: // EL TRASTO (Rebelde/Descuidado)
+    pet.hunger_interval = BASE_HUNGER * 0.8;
+    pet.happiness_interval = BASE_HAPPINESS * 0.8;
+    pet.poop_interval = BASE_POOP * 1.0;
+    pet.weight = 7;
+    pet.sleep_hour = 23;
+    pet.wake_hour = 7;
+    Serial.println(">>> Genética Aplicada: El Trasto (0.8x)");
+    break;
+  }
+}
+
 // --- MOTOR BIOLÓGICO Y METABOLISMO ---
 void procesarBiologia(uint32_t horaActual)
 {
@@ -624,8 +825,9 @@ void procesarBiologia(uint32_t horaActual)
     // Solo sumamos si no ha habido un salto gigantesco de tiempo (ej. pausa de menú)
     if (horaActual - ultimoCheckEvolucion < 2000)
     {
-      if (pet.stage == 0)
-      { // Solo si es bebé
+      // etapa final Adulto = 3
+      if (pet.stage < 3) 
+      {
         pet.evolution_timer += (horaActual - ultimoCheckEvolucion);
       }
     }
@@ -633,17 +835,63 @@ void procesarBiologia(uint32_t horaActual)
   }
 
   // 1. RELOJ DE EVOLUCIÓN (Usa el tiempo acumulado guardado)
-  if (pet.evolution_timer >= 5000 && pet.stage == 0)
+  if (pet.stage == 0)
   {
-    pet.stage = 1;
-    pet.estado_actual = ESTADO_EVOLUCION; // Activamos el estado para la animación
-    pet.action_start = millis();
-    pet.game_ticks = 0;
-    Serial.println(">>> ¡Momento de evolucionar! ✨");
+    if (pet.evolution_timer >= 10000) // 10 SEGUNDOS: El Huevo eclosiona
+    {
+      pet.stage = 1; // Nace el Bebé
+
+      // --- INICIAMOS EL METABOLISMO DEL BEBÉ ---
+      pet.hunger = 0;       // Nace famélico (urgencia máxima)
+      pet.happiness = 0;    // Nace triste/llorando
+      pet.poop_counter = 0; // Aseguramos que nace limpito
+
+      pet.hunger_interval = BASE_HUNGER * 0.1;
+      pet.happiness_interval = BASE_HAPPINESS * 0.1;
+      pet.poop_interval = BASE_POOP * 0.15;
+
+      // --- ¡EL MARGEN! Reiniciamos los relojes EXACTAMENTE al nacer ---
+      pet.last_poop_time = horaActual;
+      pet.last_hunger_time = horaActual;
+      pet.last_happiness_time = horaActual;
+
+      pet.estado_actual = ESTADO_EVOLUCION;
+      pet.action_start = horaActual;
+      pet.game_ticks = 0;
+      Serial.println(">>> ¡El huevo se está rompiendo! 🥚✨");
+    }
+  }
+  else if (pet.stage == 1)
+  {
+    if (pet.evolution_timer >= 360000) // 60 minutos de Bebé  
+    {
+      pet.stage = 2; // Pasa a Niño
+      pet.evolution_timer = 0; // Reiniciamos el timer para la siguiente etapa
+
+      // --- LÓGICA DE RAMIFICACIÓN EVOLUTIVA ---
+      uint8_t tipo_elegido = 1;
+
+      if (pet.care_mistakes == 0 && pet.discipline >= 50)
+        tipo_elegido = 1;
+      else if (pet.care_mistakes >= 3)
+        tipo_elegido = 4;
+      else if (pet.care_mistakes > 0 && pet.weight >= 15)
+        tipo_elegido = 3;
+      else
+        tipo_elegido = 2;
+
+      aplicarGenetica(tipo_elegido);
+
+      pet.care_mistakes = 0;
+      pet.estado_actual = ESTADO_EVOLUCION;
+      pet.action_start = millis();
+      pet.game_ticks = 0;
+      Serial.println(">>> ¡El bebé está evolucionando a Niño! ✨");
+    }
   }
 
   // --- INICIO DE LA CÁMARA CRIO-GÉNICA ---
-  if (!pet.is_sleeping)
+  if (!pet.is_sleeping && pet.stage > 0)
   {
     // 2. RELOJ METABÓLICO (Hambre y Felicidad)
     if (horaActual - pet.last_hunger_time >= pet.hunger_interval)
@@ -701,7 +949,10 @@ void procesarBiologia(uint32_t horaActual)
       if (pet.starvation_start == 0)
         pet.starvation_start = horaActual;
       else if (horaActual - pet.starvation_start >= 43200000)
+      {
         pet.estado_actual = ESTADO_MUERTE;
+        reproducirSonido(SND_MUERTE);
+      }
     }
     else
     {
@@ -713,7 +964,10 @@ void procesarBiologia(uint32_t horaActual)
       if (pet.sickness_start == 0)
         pet.sickness_start = horaActual;
       else if (horaActual - pet.sickness_start >= 21600000)
+      {
         pet.estado_actual = ESTADO_MUERTE;
+        reproducirSonido(SND_MUERTE);
+      }
     }
     else
     {
@@ -755,17 +1009,17 @@ void setup()
     Serial.println("Hello, Tama32! Creando nueva mascota...");
 
     // Estado inicial
-    pet.hunger = 2;
-    pet.happiness = 2;
+    pet.hunger = 0;
+    pet.happiness = 0;
     pet.health_status = 0;
     pet.weight = 5;
-    pet.stage = 0;
-    pet.evolution_timer = 0; // <-- ¡FUNDAMENTAL! Empezar de cero
+    pet.stage = 0;           // Huevo
+    pet.evolution_timer = 0; // Tiempo de eclosión
     pet.last_session_time = 0;
     pet.action_start = 0;
     pet.current_action = ' ';
     pet.age_days = 0;
-    pet.type = 1;
+    pet.type = 0;
     pet.birth_time = millis();
     pet.care_mistakes = 0;
     pet.mistake_processed = false;
@@ -787,6 +1041,9 @@ void setup()
     pet.sickness_start = 0;
     pet.starvation_start = 0;
     pet.dirt_accumulation = 0;
+
+    pet.x = 48; // Centro horizontal
+    pet.y = 16; // Centro vertical (entre los menús)
   }
 
   actualizarPantalla();
@@ -980,15 +1237,25 @@ void loop()
     if (lecturaA != estadoAnteriorA && (horaActual - ultimoToqueA > 50))
     {
       if (lecturaA == LOW) // Solo movemos el cursor si el cambio fue Hacia Abajo (Pulsar)
-      {
-        menu_index++;
-        // LIMITAMOS A 6: Así el icono 7 (Atención) nunca se selecciona
-        if (menu_index > 6)
+        if (pet.stage > 0) // <-- ¡NUEVO! El huevo no permite abrir menús
         {
-          menu_index = 0;
+          reproducirSonido(SND_NAVEGAR);
+          menu_index++;
+          if (menu_index > 6)
+            menu_index = 0;
+          actualizarPantalla();
         }
-        actualizarPantalla(); // Forzamos el redibujado instantáneo
-      }
+        else
+        {
+          reproducirSonido(SND_NAVEGAR);
+          menu_index++;
+          // LIMITAMOS A 6: Así el icono 7 (Atención) nunca se selecciona
+          if (menu_index > 6)
+          {
+            menu_index = 0;
+          }
+          actualizarPantalla(); // Forzamos el redibujado instantáneo
+        }
 
       // Actualizamos cronómetro y estado para AMBOS movimientos (pulsar y soltar)
       ultimoToqueA = horaActual;
@@ -1003,6 +1270,7 @@ void loop()
     {
       if (lecturaB == LOW) // Solo ejecutamos la acción si el cambio es "hacia abajo" (Pulsar)
       {
+        reproducirSonido(SND_CONFIRMAR);
         if (menu_index != -1) // Si HAY un icono seleccionado
         {
           // Si está durmiendo, SOLO permitimos ver Estadísticas (5) y tocar la Luz (6)
@@ -1018,6 +1286,7 @@ void loop()
             {
               if (pet.health_status == 1)
               {
+                reproducirSonido(SND_ERROR);
                 pet.current_action = 'n';
                 pet.estado_actual = ESTADO_ACCION;
                 pet.action_start = horaActual;
@@ -1025,13 +1294,14 @@ void loop()
               else
               {
                 pet.estado_actual = ESTADO_SUBMENU_COMIDA;
-                submenu_index = 0;
+                submenu_index = 0; // <-- AÑADE ESTA LÍNEA AQUÍ
               }
             }
             else if (menu_index == 1) // JUEGO
             {
               if (pet.health_status == 1)
               {
+                reproducirSonido(SND_ERROR);
                 pet.current_action = 'n';
                 pet.estado_actual = ESTADO_ACCION;
                 pet.action_start = horaActual;
@@ -1053,6 +1323,10 @@ void loop()
               {
                 pet.poop_counter = 0;
                 pet.dirt_accumulation = 0;
+
+                // --- ¡PARCHE ANTI-DEUDA METABÓLICA! ---
+                pet.last_poop_time = horaActual;
+
                 pet.current_action = 'l';
                 pet.estado_actual = ESTADO_ACCION;
                 pet.action_start = horaActual;
@@ -1083,6 +1357,7 @@ void loop()
               // Caso B: No hay motivo para regañarle
               else
               {
+                reproducirSonido(SND_ERROR);
                 pet.current_action = 'n'; // 'n' de Nope (Te dice que no con la cabeza)
               }
               pet.estado_actual = ESTADO_ACCION;
@@ -1125,6 +1400,7 @@ void loop()
     {
       if (lecturaC == LOW && menu_index != -1)
       {
+        reproducirSonido(SND_CANCELAR);
         menu_index = -1;      // Deseleccionamos el menú
         actualizarPantalla(); // Borramos el fondo blanco del icono
         Serial.println(">>> Menú cancelado. ❌");
@@ -1156,10 +1432,24 @@ void loop()
       Serial.print(" | Tipo: ");
       Serial.println(pet.type);
 
-      // Aviso de atención
+      // --- LOGICA DE ALARMA POR EVENTO (UNA SOLA VEZ) ---
+      static bool alarmaProcesada = false; // Variable para recordar si ya sonó
+
       if (pet.needs_attention == true)
       {
-        Serial.println("¡AVISO: La mascota te necesita! 🚨");
+        // Solo suena si es el momento justo en que se activa (flanco de subida)
+        if (alarmaProcesada == false)
+        {
+          Serial.println("¡AVISO: La mascota te necesita! 🚨");
+          reproducirSonido(SND_LLAMADA); // Suena la melodía de 6 bips
+          alarmaProcesada = true;        // Marcamos como sonada
+        }
+      }
+      else
+      {
+        // Cuando la necesidad desaparece (se limpia caca, se da medicina, etc.)
+        // reseteamos la variable para que pueda volver a sonar la próxima vez.
+        alarmaProcesada = false;
       }
 
       // DISCIPLINA (0.1%)
@@ -1195,8 +1485,74 @@ void loop()
           }
         }
       }
+
+      // --- PASEO CON INTENCIÓN (PASOS LARGOS) ---
+      // Solo se mueve si: está despierto, NO está enfermo y no hay menús abiertos
+      if (!pet.is_sleeping && pet.health_status == 0 && menu_index == -1)
+      {
+        static int8_t direccionX = 0;
+        static int8_t pasos_restantes = 0;
+
+        // 1. Decidir un nuevo plan
+        if (pasos_restantes <= 0)
+        {
+          if (random(0, 10) < 7) // 70% de probabilidad de echar a andar
+          {
+            direccionX = random(0, 2) == 0 ? -1 : 1;
+
+            // Como damos pasos más grandes, cruzaremos la pantalla más rápido.
+            // Con 3 a 8 pasos ya es suficiente para recorrer casi toda su zona.
+            pasos_restantes = random(3, 8);
+          }
+          else // 30% de quedarse quieto mirando
+          {
+            direccionX = 0;
+            pasos_restantes = random(1, 4); // Pausas cortas (1 a 3 segundos)
+          }
+        }
+
+        // 2. Ejecutar el plan
+        if (pasos_restantes > 0)
+        {
+          // --- ¡EL CAMBIO CLAVE! ---
+          // Multiplicamos por 4 (o por 6 si lo quieres aún más loco).
+          pet.x += (direccionX * 4);
+          pasos_restantes--;
+
+          // Si llega a los bordes, frena en seco y cancela el plan
+          if (pet.x < 4)
+          {
+            pet.x = 4;
+            pasos_restantes = 0;
+          }
+          if (pet.x > 54)
+          {
+            pet.x = 54;
+            pasos_restantes = 0;
+          }
+        }
+
+        // 3. Saltos
+        if (pet.y < 16)
+        {
+          pet.y = 16; // Gravedad (cae al suelo)
+        }
+        else
+        {
+          if (random(0, 10) < 4)
+            pet.y = 12; // 40% de probabilidad de dar un salto
+        }
+      }
+      else if (pet.health_status == 1)
+      {
+        // Enfermo: clavado al suelo
+        pet.x = 48;
+        pet.y = 16;
+      }
+
       // --- ACTUALIZACIÓN VISUAL ---
-      frame_animation = !frame_animation;
+      frame_animation = !frame_animation; // Mantenemos el bool para cosas de 2 frames (menús, etc)
+      idle_frame_index = (idle_frame_index + 1) % 3; // Ciclo 0, 1, 2 para la mascota
       actualizarPantalla();
 
       tiempoUltimoLatido = horaActual;
@@ -1208,44 +1564,65 @@ void loop()
     break;
 
   case ESTADO_ACCION:
+    // --- LECTURA DE BOTONES PARA EL SKIP (Con Antirrebote) ---
+    lecturaB = digitalRead(BTN_B);
+    if (lecturaB != estadoAnteriorB && (horaActual - ultimoToqueB > 50))
+    {
+      if (lecturaB == LOW)
+        pet.action_start = horaActual - 3000; // Salta al final
+      ultimoToqueB = horaActual;
+      estadoAnteriorB = lecturaB;
+    }
+
+    lecturaC = digitalRead(BTN_C);
+    if (lecturaC != estadoAnteriorC && (horaActual - ultimoToqueC > 50))
+    {
+      if (lecturaC == LOW)
+        pet.action_start = horaActual - 3000; // Salta al final
+      ultimoToqueC = horaActual;
+      estadoAnteriorC = lecturaC;
+    }
+
+    // Comprobamos si la acción ha terminado (o ha sido saltada)
     if (horaActual - pet.action_start >= 3000)
     {
-      // --- SALIDA DEL ESTADO ---
-      pet.estado_actual = ESTADO_IDLE;
-      actualizarPantalla();
-
+      // --- SALIDA INTELIGENTE AL SUBMENÚ ---
       if (pet.current_action == 'c' || pet.current_action == 's')
-        Serial.println(">>> La mascota ha terminado de comer. 🥣");
-      else if (pet.current_action == 'l')
-        Serial.println(">>> ¡Todo limpio y reluciente! ✨");
-      else if (pet.current_action == 'm')
-        Serial.println(">>> La mascota se ha curado. ❤️");
-      else if (pet.current_action == 'd')
-        Serial.println(">>> La mascota se ha disciplinado. 📏");
+      {
+        pet.estado_actual = ESTADO_SUBMENU_COMIDA;
+        // NO reseteamos submenu_index aquí para que mantenga la posición (Food o Snack)
+      }
+      else
+      {
+        pet.estado_actual = ESTADO_IDLE;
+      }
+
+      actualizarPantalla();
+      Serial.println(">>> Acción finalizada. Volviendo al menú.");
     }
     else
     {
-      // --- 1. NUEVO LATIDO RÁPIDO (Animación fluida a 20 FPS) ---
+      // --- 1. LATIDO RÁPIDO PARA ANIMACIÓN (20 FPS) ---
       static uint32_t ultimoFrameAnimacion = 0;
       if (horaActual - ultimoFrameAnimacion >= 50)
       {
-        actualizarPantalla(); // Esto llama a la matemática de la escoba constantemente
+        actualizarPantalla();
         ultimoFrameAnimacion = horaActual;
       }
 
-      // --- 2. TU LATIDO NORMAL (1 segundo) ---
+      // --- 2. LATIDO DE SONIDO Y LÓGICA (1 segundo) ---
       if (horaActual - tiempoUltimoLatido >= INTERVALO)
       {
-        frame_animation = !frame_animation; // Alternamos la cara de la mascota
+        frame_animation = !frame_animation;
 
         if (pet.current_action == 'c' || pet.current_action == 's')
-          Serial.println("¡Ñam!");
+          reproducirSonido(SND_COMER);
         else if (pet.current_action == 'l')
-          Serial.println("¡Fiu, fiu! 🧽");
+          reproducirSonido(SND_NAVEGAR);
         else if (pet.current_action == 'm')
-          Serial.println("Curando... 💊");
+          reproducirSonido(SND_CURAR);
         else if (pet.current_action == 'd')
-          Serial.println("Disciplinando... 📏");
+          reproducirSonido(SND_ERROR);
 
         tiempoUltimoLatido = horaActual;
       }
@@ -1276,6 +1653,7 @@ void loop()
         if (pet.health_status == 1)
         {
           // Si está enfermo, no importa lo que elijas: la acción será "Nope"
+          reproducirSonido(SND_ERROR);
           pet.current_action = 'n';          // 'n' activará los sprites de negación
           pet.estado_actual = ESTADO_ACCION; // Saltamos a la animación
           pet.action_start = horaActual;     // Empezamos a contar los 3 segundos
@@ -1303,6 +1681,7 @@ void loop()
             else
             {
               // Si está lleno, simplemente cancelamos y volvemos a la pantalla principal
+              reproducirSonido(SND_ERROR);
               pet.current_action = 'n';          // 'n' activará los sprites de negación
               pet.estado_actual = ESTADO_ACCION; // Saltamos a la animación
               pet.action_start = horaActual;     // Empezamos a contar los 3 segundos
@@ -1388,7 +1767,7 @@ void loop()
     // (Opcional: puedes hacer que el botón B también sirva para salir o pasar página si quieres)
     break;
 
-case ESTADO_EVOLUCION:
+  case ESTADO_EVOLUCION:
     // --- EL LATIDO CENTRAL (Sincronizado con INTERVALO = 1 seg) ---
     if (horaActual - tiempoUltimoLatido >= INTERVALO)
     {
@@ -1396,14 +1775,20 @@ case ESTADO_EVOLUCION:
       pet.game_ticks++;                   // Sumamos 1 fotograma (1 tick = 1 segundo)
       tiempoUltimoLatido = horaActual;    // Reseteamos el reloj maestro
 
-      // La secuencia de luces tiene 10 pasos (10 segundos).
-      // Dejamos 3 segundos extra para que celebre (Tick 10, 11 y 12).
-      // Al llegar al tick 13 (13 segundos en total), volvemos a la normalidad.
-      if (pet.game_ticks >= 13) 
+      if (pet.game_ticks < 10)
+      {
+        reproducirSonido(SND_EVOLUCION_TICK); // <-- NUEVO: 10 latidos de carga
+      }
+      else if (pet.game_ticks == 10)
+      {
+        reproducirSonido(SND_VICTORIA); // <-- NUEVO: ¡TA-DAAA!
+      }
+
+      if (pet.game_ticks >= 13)
       {
         pet.estado_actual = ESTADO_IDLE;
       }
-      
+
       actualizarPantalla(); // Se dibuja UNA sola vez por segundo, como el resto del juego
     }
     break;
@@ -1563,6 +1948,11 @@ case ESTADO_EVOLUCION:
           pet.game_phase = 3; // Fin del juego
           pet.game_ticks = 0; // Reiniciamos ticks para la pantalla final
           frame_animation = true;
+
+          if (pet.game_wins >= 3)
+            reproducirSonido(SND_VICTORIA);
+          else
+            reproducirSonido(SND_DERROTA);
         }
         else
         {
@@ -1646,10 +2036,12 @@ case ESTADO_EVOLUCION:
         {
           pet.last_guess_won = true;
           pet.game_wins++;
+          reproducirSonido(SND_ACIERTO);
         }
         else
         {
           pet.last_guess_won = false;
+          reproducirSonido(SND_FALLO);
         }
 
         pet.game_phase = 2;
