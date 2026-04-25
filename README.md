@@ -130,3 +130,41 @@ Fase Beta 1.0: Versión actual. Estabilidad certificada del bucle principal y si
 Fase Beta 1.1: Migración de llamadas de cronometría estándar (millis()) a resoluciones altas vinculadas al temporizador de sistema (esp_timer_get_time()).
 
 Fase RC 1.0: Implementación completa y acoplamiento de las interrupciones del controlador de energía esp_light_sleep_start() para reducir el consumo estático (Idle Draw) al orden de microamperios.
+
+
+Registro de Cambios Actualizado (Versión 1.1)
+
+Sustituye la sección correspondiente en tu README.md por esta versión técnica actualizada:
+Subsistema de Interfaz y Gráficos (ui.cpp)
+
+    Sprites de Enfermedad Dinámicos: Corrección en la lógica de renderizado para estados de salud comprometidos; el sistema consulta ahora los punteros obtenerSpriteTriste() y obtenerSpriteBase() de la evolución activa.
+
+    Coreografía de Limpieza por Fases: Refactorización de la rutina de mantenimiento en una secuencia de dos etapas: barrido dinámico (2000ms) y celebración rítmica (3000ms).
+
+    Animación de Celebración Dinámica: Se ha corregido el estado estático post-limpieza implementando una alternancia de frames entre los estados "Feliz" y "Base" sincronizada con el intervalo global frame_animation.
+
+    Física de Arrastre de la Escoba: Implementación de detección de colisión visual; la mascota mantiene su posición original hasta ser alcanzada por la herramienta, momento en el que es desplazada fuera del área visible.
+
+    Reubicación del Icono de Disciplina: Desplazamiento de la coordenada de renderizado del icono al sector izquierdo (X=25) para prevenir la superposición con deposiciones activas.
+
+    Ocultación de Sprites Estáticos: Inhabilitación del renderizado de suciedad en coordenadas de origen durante la acción de limpieza para evitar parpadeos visuales.
+
+Lógica de Control y Máquina de Estados (main.cpp)
+
+    Secuenciación de Finalización de Acción: Implementación de un finalizador asíncrono que extiende la limpieza a 5000ms, asegurando que el reseteo de poop_counter y dirt_accumulation ocurra tras la animación.
+
+    Sincronización Acústica: Coordinación del sonido SND_NAVEGAR para que se ejecute exclusivamente durante la ventana de movimiento de la escoba.
+
+    Habilitación de Movimiento Autónomo: Eliminación de la condicional que restringía el desplazamiento de la mascota durante la navegación por menús.
+
+    Gestión de Iluminación Preventiva: Validación en la rutina de sueño que suprime alarmas y errores de cuidado si el usuario apaga la luz antes de la hora programada.
+
+Motor Biológico y Evolución (logic.cpp)
+
+    Umbrales de Higiene Dinámicos: Límite de acumulación de suciedad reducido a 30 minutos para la etapa de bebé (Stage 1) para garantizar el impacto de la higiene en la evolución temprana.
+
+    Exclusión de Berrinches por Salud: Modificación del generador de eventos para bloquear disparos de needs_attention si health_status es diferente de cero.
+
+    Ajuste del Ciclo Digestivo Inicial: Aplicación de un desplazamiento temporal en el nacimiento que reduce el intervalo de la primera deposición a 15 minutos aproximadamente.
+
+    Reseteo de Atributos en Evolución: Reinicio de las variables pet.care_mistakes y pet.discipline en las transiciones de etapa para asegurar curvas de dificultad independientes.

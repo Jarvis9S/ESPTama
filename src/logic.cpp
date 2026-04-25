@@ -47,7 +47,7 @@ void aplicarGenetica(uint8_t nuevo_tipo)
 
   case 4: // EL TRASTO (Rebelde/Descuidado)
     pet.hunger_interval = BASE_HUNGER * 0.8;
-    pet.happiness_interval = BASE_HAPPINESS * 0.8;
+    pet.happiness_interval = BASE_HAPPINESS * 0.6;
     pet.poop_interval = BASE_POOP * 1.0;
     pet.tantrum_chance = BASE_TANTRUM * 2.5;
     if (pet.weight < pet.min_weight)
@@ -110,7 +110,8 @@ void procesarBiologia(uint32_t horaActual)
       pet.happiness = 0;
       pet.last_hunger_time = horaActual;
       pet.last_happiness_time = horaActual;
-      pet.last_poop_time = horaActual;
+      pet.poop_interval = 450000;
+      pet.last_poop_time = horaActual - (pet.poop_interval - 300000);
 
       pet.estado_actual = ESTADO_EVOLUCION;
       pet.action_start = horaActual;
@@ -135,6 +136,7 @@ void procesarBiologia(uint32_t horaActual)
       aplicarGenetica(tipo_elegido);
 
       pet.care_mistakes = 0;
+      pet.discipline = 0;
       pet.estado_actual = ESTADO_EVOLUCION;
       pet.action_start = horaActual; // Usamos horaActual mejor que millis()
       pet.game_ticks = 0;
@@ -177,12 +179,16 @@ void procesarBiologia(uint32_t horaActual)
       }
 
       // [NUEVO] B.2. Enfermedad por falta de higiene (La "Caca Vacuna")
-      // 🔒 ARREGLO: Miramos el acumulador real de suciedad (14400000ms = 4 horas)
-      if (pet.dirt_accumulation >= 14400000) {
-        if (pet.health_status == 0) { // Solo iniciamos el timer si estaba sano
+       
+      // Si es Bebé (Stage 1), el límite es de 30 minutos (1,800,000 ms).
+      // Si es Niño o Adulto, mantenemos las 4 horas (14,400,000 ms).
+      uint32_t limite_suciedad = (pet.stage == 1) ? 1800000 : 14400000;
+
+      if (pet.dirt_accumulation >= limite_suciedad) {
+        if (pet.health_status == 0) { 
           pet.health_status = 1;
           pet.sickness_start = horaActual;
-          Serial.println(">>> Enfermedad provocada por suciedad.");
+          Serial.println(">>> Enfermedad provocada por suciedad (Ajuste por etapa).");
         }
       }
 
@@ -192,8 +198,8 @@ void procesarBiologia(uint32_t horaActual)
 
       if (horaActual - ultimoCheckBerrinche >= 60000) 
       {
-        // Solo tira el dado si NO es una emergencia real (Hambre > 0 y Feliz > 0)
-        if (!pet.needs_attention && pet.hunger > 0 && pet.happiness > 0 && pet.discipline < 100 && random(0, 10000) < pet.tantrum_chance) {
+        // Solo tira el dado si NO es una emergencia real (Hambre > 0 y Feliz > 0 y no está enfermo) y no necesita atención ya (para no acumular berrinches)
+        if (!pet.needs_attention && pet.hunger > 0 && pet.happiness > 0 && pet.health_status == 0 && pet.discipline < 100 && random(0, 10000) < pet.tantrum_chance) {
           pet.needs_attention = true;
           pet.attention_start = horaActual;
           pet.mistake_processed = false;

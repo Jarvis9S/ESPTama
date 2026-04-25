@@ -174,9 +174,15 @@ void loop()
         {
           pet.is_sleeping = true;
           pet.sleep_start = horaActual;
-          pet.needs_attention = true;
-          pet.attention_start = horaActual;
-          pet.mistake_processed = false;
+          
+          // Si la luz ya estaba apagada, ¡Premio! No hay alarma.
+          if (pet.is_light_on) {
+              pet.needs_attention = true;
+              pet.attention_start = horaActual;
+              pet.mistake_processed = false;
+          } else {
+              pet.needs_attention = false;
+          }
         }
         else if (reloj_h == pet.wake_hour && pet.is_sleeping)
         {
@@ -348,128 +354,115 @@ void loop()
     Serial.println(">>> ✨ Pantalla encendida automáticamente para evento crítico.");
   }
 
-  // =========================================================================
-  // --- TELEMETRÍA GLOBAL (SUPER-DEBUG HUD) ---
-  // Se imprime siempre, estemos en el estado que estemos, cada segundo.
+// =========================================================================
+  // --- TELEMETRÍA GLOBAL DETALLADA (BETA 1.1 - FULL DEBUG) ---
   // =========================================================================
   static uint32_t ultimo_print_hud = 0;
-  if (horaActual - ultimo_print_hud >= 1000)
+  if (horaActual - ultimo_print_hud >= 1000) // Se ejecuta cada 1 segundo
   {
     ultimo_print_hud = horaActual;
 
     Serial.println("\n>>> [--- " + String(reloj_h < 10 ? "0" : "") + String(reloj_h) + ":" + String(reloj_m < 10 ? "0" : "") + String(reloj_m) + " ---] <<<");
 
-    // 1. IDENTIDAD Y FISIOLOGÍA
-    Serial.print("ID: [Gen:");
-    Serial.print(pet.generation);
-    Serial.print(" | Stage:");
-    Serial.print(pet.stage);
-    Serial.print(" | Type:");
-    Serial.print(pet.type);
-    Serial.print(" | Baby:");
-    Serial.print(pet.baby_type);
-    Serial.print("] | FISIO: [H:");
-    Serial.print(pet.hunger);
-    Serial.print("/4 | F:");
+    // 1. ESTADO FISIOLÓGICO (CORAZONES Y ATRIBUTOS)
+    Serial.print("FISIO:  [Hambre:");
+    Serial.print(pet.hunger); // Muestra el valor actual de 0 a 4
+    Serial.print("/4 | Feliz:");
     Serial.print(pet.happiness);
-    Serial.print("/4 | D:");
+    Serial.print("/4 | Disc:");
     Serial.print(pet.discipline);
-    Serial.print("% | W:");
+    Serial.print("% | Peso:");
     Serial.print(pet.weight);
-    Serial.println("g]");
+    Serial.print("g | Edad:");
+    Serial.print(pet.age_days);
+    Serial.println("d]");
 
-    // 2. METABOLISMO (Tiempos restantes en segundos)
-    uint32_t mult = pet.is_sleeping ? 4 : 1; // Aplicamos el mismo mult que en logic.cpp
+    // 2. IDENTIDAD Y GENÉTICA
+    Serial.print("SISTEMA:[Gen:");
+    Serial.print(pet.generation);
+    Serial.print(" | Etapa:");
+    Serial.print(pet.stage); // Muestra 0 (Huevo), 1 (Bebé) o 2 (Niño)
+    Serial.print(" | Tipo:");
+    Serial.print(pet.type);
+    Serial.print(" | BabyType:");
+    Serial.println(pet.baby_type);
 
+    // 3. METABOLISMO (Tiempo restante / Intervalo activo)
+    uint32_t mult = pet.is_sleeping ? 4 : 1; // El metabolismo es 4x más lento al dormir
     long tH = max(0L, (long)((pet.hunger_interval * mult) - (horaActual - pet.last_hunger_time)) / 1000);
     long tF = max(0L, (long)((pet.happiness_interval * mult) - (horaActual - pet.last_happiness_time)) / 1000);
     long tP = max(0L, (long)(pet.poop_interval - (horaActual - pet.last_poop_time)) / 1000);
 
-    Serial.print("RELOJES: [Hambre en:");
+    Serial.print("RELOJES:[T-Hambre:");
     Serial.print(tH);
-    Serial.print("s | Feliz en:");
+    Serial.print("s | T-Feliz:");
     Serial.print(tF);
-    Serial.print("s | Caca en:");
+    Serial.print("s | T-Caca:");
     Serial.print(tP);
-    Serial.print("s | Berrinche:");
-    Serial.print((float)pet.tantrum_chance / 100.0);
-    Serial.println("%]");
+    Serial.print("s | Mult:");
+    Serial.print(mult);
+    Serial.println("x]");
 
-    // 3. HIGIENE Y RIESGO SANITARIO
-    long suciedad = pet.dirt_accumulation / 1000; // 🔒 Ahora muestra los segundos acumulados reales
+    // 4. HIGIENE Y RIESGO SANITARIO
+    long suciedad = pet.dirt_accumulation / 1000;
+    uint8_t vel_suciedad = (pet.poop_counter > 0) ? pet.poop_counter : 0;
+    // El límite es de 1800s (30min) para bebés y 14400s (4h) para el resto
+    uint32_t limite_actual = (pet.stage == 1) ? 1800 : 14400; 
 
-    Serial.print("RIESGO:  [Suciedad:");
+    Serial.print("RIESGO: [Suciedad:");
     Serial.print(suciedad);
-    Serial.print("/14400 | Cacas:");
+    Serial.print("/");
+    Serial.print(limite_actual);
+    Serial.print("s | Vel: x"); // Velocidad de acumulación según número de cacas
+    Serial.print(vel_suciedad);
+    Serial.print(" | Cacas:");
     Serial.print(pet.poop_counter);
-    Serial.print(" | Snacks:");
-    Serial.print(pet.snack_count);
-    Serial.print("/5 | Sick:");
-    Serial.println(pet.health_status == 1 ? "SI]" : "NO]");
-
-    // 4. ALERTAS Y CRONÓMETROS LETALES
-    Serial.print("ALERTAS: [Fallos(CM):");
-    Serial.print(pet.care_mistakes);
-    Serial.print("/5 | Reloj CM: ");
-
-    if (pet.needs_attention && !pet.mistake_processed)
-    {
-      long tMistake = max(0L, (long)(900000 - (horaActual - pet.attention_start)) / 1000);
-
-      if (pet.is_sleeping)
-      {
-        Serial.print("LUZ(");
-        Serial.print(tMistake);
-        Serial.print("s)"); // <-- ¡NUEVO!
-      }
-      else if (pet.hunger > 0 && pet.happiness > 0)
-      {
-        Serial.print("BERRINCHE(");
-        Serial.print(tMistake);
+    Serial.print("/4 | Sick:");
+    Serial.print(pet.health_status == 1 ? "SI" : "NO");
+    if(pet.health_status == 1) {
+        // Muestra cuánto tiempo queda antes de la muerte por enfermedad
+        Serial.print(" (Muere en:");
+        Serial.print(max(0L, (long)(21600000 - (horaActual - pet.sickness_start)) / 1000));
         Serial.print("s)");
-      }
-      else
-      {
-        Serial.print(tMistake);
-        Serial.print("s");
-      }
     }
-    else if (pet.needs_attention && pet.mistake_processed)
-    {
-      Serial.print("Anotado");
-    }
-    else
-    {
-      Serial.print("--");
-    }
-
-    // 5. PRONÓSTICO DE EVOLUCIÓN
-    String forecast = "???";
-    if (pet.stage == 0)
-      forecast = "Eclosion";
-    else if (pet.stage == 1)
-    {
-      if (pet.weight >= 20)
-        forecast = "BEBOTE (T3)";
-      else if (pet.care_mistakes == 0 && pet.discipline >= 25)
-        forecast = "RAYITO (T1)";
-      else if (pet.care_mistakes >= 2)
-        forecast = (pet.baby_type == 1) ? "TRASTO (T4)" : "TIZON (T2)";
-      else
-        forecast = (pet.baby_type == 1) ? "TRASTO (T4)" : "TIZON (T2)";
-    }
-
-    long tEvo = 0;
-    if (pet.stage == 0)
-      tEvo = (60000 - pet.evolution_timer) / 1000;
-    else if (pet.stage == 1)
-      tEvo = (3600000 - pet.evolution_timer) / 1000;
-
-    Serial.print("DESTINO: [Prox. fase en:");
-    Serial.print(max(0L, tEvo));
-    Serial.print("s | RUTA PREVISTA: ");
-    Serial.print(forecast);
     Serial.println("]");
+
+    // 5. ALERTAS Y TIMEOUTS DE CUIDADO
+    Serial.print("STATUS: [Atencion:");
+    Serial.print(pet.needs_attention ? "SI" : "NO");
+    Serial.print(" | Rebelde:");
+    Serial.print(pet.is_rebelling ? "SI" : "NO");
+    Serial.print(" | Sueño:");
+    Serial.print(pet.is_sleeping ? "Zzz" : "D");
+    Serial.print(" | Luz:");
+    Serial.print(pet.is_light_on ? "ON" : "OFF");
+    Serial.print(" | CM:");
+    Serial.print(pet.care_mistakes);
+    Serial.print("/5 | Alarma:");
+    if (pet.needs_attention && !pet.mistake_processed) {
+        // Cuenta atrás de 15 minutos para atender la llamada
+        Serial.print(max(0L, (long)(900000 - (horaActual - pet.attention_start)) / 1000));
+        Serial.print("s");
+    } else {
+        Serial.print("--");
+    }
+    Serial.println("]");
+
+    // 6. PRONÓSTICO DE EVOLUCIÓN
+    String forecast = "???";
+    if (pet.stage == 0) forecast = "HUEVO (Eclosion)";
+    else if (pet.stage == 1) {
+        // Lógica de evolución basada en peso, disciplina y errores
+        if (pet.weight >= 20) forecast = "EL BEBOTE (T3)";
+        else if (pet.care_mistakes == 0 && pet.discipline >= 25) forecast = "EL RAYITO (T1)";
+        else forecast = (pet.baby_type == 1) ? "EL TRASTO (T4)" : "EL TIZON (T2)";
+    }
+    
+    long tEvo = (pet.stage == 0) ? (60000 - pet.evolution_timer) : (3600000 - pet.evolution_timer);
+    Serial.print("DESTINO:[T-Evo:");
+    Serial.print(max(0L, tEvo / 1000));
+    Serial.print("s | Ruta:");
+    Serial.println(forecast + "]");
     Serial.println("===========================================================================");
   }
 
@@ -638,12 +631,11 @@ void loop()
             { // BAÑO
               if (pet.poop_counter > 0)
               {
-                pet.poop_counter = 0;
-                pet.dirt_accumulation = 0;
-                pet.last_poop_time = horaActual;
+                // 🔒 ARREGLO: Ya no reseteamos aquí. Solo activamos la animación.
                 pet.current_action = 'l';
                 pet.estado_actual = ESTADO_ACCION;
                 pet.action_start = horaActual;
+                reproducirSonido(SND_CONFIRMAR);
               }
             }
             else if (menu_index == 3)
@@ -743,7 +735,7 @@ void loop()
 
       // --- PASEO CON INTENCIÓN (PASOS LARGOS) ---
       // Solo se mueve si: está despierto, NO está enfermo y no hay menús abiertos
-      if (pet.stage > 0 && !pet.is_sleeping && pet.health_status == 0 && menu_index == -1)
+      if (pet.stage > 0 && !pet.is_sleeping && pet.health_status == 0)
       {
         static int8_t direccionX = 0;
         static int8_t pasos_restantes = 0;
@@ -820,67 +812,86 @@ void loop()
     break;
 
   case ESTADO_ACCION:
-    // --- LECTURA DE BOTONES PARA EL SKIP (Con Antirrebote) ---
-    lecturaB = digitalRead(BTN_B);
-    if (lecturaB != estadoAnteriorB && (horaActual - ultimoToqueB > 50))
     {
-      if (lecturaB == LOW)
-        pet.action_start = horaActual - 3000; // Salta al final
-      ultimoToqueB = millis();
-      estadoAnteriorB = lecturaB;
-    }
+      // 1. Calculamos la duración: 5 segundos para limpiar (2s barrido + 3s happy), 3 para el resto
+      uint32_t duracion = (pet.current_action == 'l') ? 5000 : 3000;
 
-    lecturaC = digitalRead(BTN_C);
-    if (lecturaC != estadoAnteriorC && (horaActual - ultimoToqueC > 50))
-    {
-      if (lecturaC == LOW)
-        pet.action_start = horaActual - 3000; // Salta al final
-      ultimoToqueC = millis();
-      estadoAnteriorC = lecturaC;
-    }
-
-    // Comprobamos si la acción ha terminado (o ha sido saltada)
-    if (horaActual - pet.action_start >= 3000)
-    {
-      // --- SALIDA INTELIGENTE AL SUBMENÚ ---
-      if (pet.current_action == 'c' || pet.current_action == 's')
+      // --- LECTURA DE BOTONES PARA EL SKIP ---
+      lecturaB = digitalRead(BTN_B);
+      if (lecturaB != estadoAnteriorB && (horaActual - ultimoToqueB > 50))
       {
-        pet.estado_actual = ESTADO_SUBMENU_COMIDA;
-        // NO reseteamos submenu_index aquí para que mantenga la posición (Food o Snack)
+        if (lecturaB == LOW)
+          pet.action_start = horaActual - duracion; // Salta justo al final
+        ultimoToqueB = millis();
+        estadoAnteriorB = lecturaB;
+      }
+
+      lecturaC = digitalRead(BTN_C);
+      if (lecturaC != estadoAnteriorC && (horaActual - ultimoToqueC > 50))
+      {
+        if (lecturaC == LOW)
+          pet.action_start = horaActual - duracion; // Salta justo al final
+        ultimoToqueC = millis();
+        estadoAnteriorC = lecturaC;
+      }
+
+      // --- EL FINALIZADOR: Comprobamos si la acción ha terminado ---
+      if (horaActual - pet.action_start >= duracion)
+      {
+        if (pet.current_action == 'l')
+        {
+          // AQUÍ ocurre la limpieza real de datos tras ver la animación
+          pet.poop_counter = 0;
+          pet.dirt_accumulation = 0;
+          pet.last_poop_time = horaActual;
+          
+          pet.x = 48; // Reaparece en el centro para el paseo
+          pet.y = 16;
+          pet.estado_actual = ESTADO_IDLE;
+        }
+        else if (pet.current_action == 'c' || pet.current_action == 's')
+        {
+          pet.estado_actual = ESTADO_SUBMENU_COMIDA;
+        }
+        else
+        {
+          pet.estado_actual = ESTADO_IDLE;
+        }
+
+        actualizarPantalla();
+        Serial.println(">>> Acción finalizada. Volviendo al menú.");
       }
       else
       {
-        pet.estado_actual = ESTADO_IDLE;
-      }
+        // --- ANIMACIÓN Y SONIDO (Mientras la acción está en curso) ---
+        
+        // Latido rápido para refrescar la pantalla (20 FPS)
+        static uint32_t ultimoFrameAnimacion = 0;
+        if (horaActual - ultimoFrameAnimacion >= 50)
+        {
+          actualizarPantalla();
+          ultimoFrameAnimacion = horaActual;
+        }
 
-      actualizarPantalla();
-      Serial.println(">>> Acción finalizada. Volviendo al menú.");
-    }
-    else
-    {
-      // --- 1. LATIDO RÁPIDO PARA ANIMACIÓN (20 FPS) ---
-      static uint32_t ultimoFrameAnimacion = 0;
-      if (horaActual - ultimoFrameAnimacion >= 50)
-      {
-        actualizarPantalla();
-        ultimoFrameAnimacion = horaActual;
-      }
+        // Latido de 1 segundo para sonidos y lógica
+        if (horaActual - tiempoUltimoLatido >= INTERVALO)
+        {
+          frame_animation = !frame_animation;
+          long elapsed = horaActual - pet.action_start;
 
-      // --- 2. LATIDO DE SONIDO Y LÓGICA (1 segundo) ---
-      if (horaActual - tiempoUltimoLatido >= INTERVALO)
-      {
-        frame_animation = !frame_animation;
+          if (pet.current_action == 'c' || pet.current_action == 's')
+            reproducirSonido(SND_COMER);
+          else if (pet.current_action == 'l') {
+             // El sonido solo suena durante los 2s de movimiento
+             if (elapsed < 2000) reproducirSonido(SND_NAVEGAR); 
+          }
+          else if (pet.current_action == 'm')
+            reproducirSonido(SND_CURAR);
+          else if (pet.current_action == 'd')
+            reproducirSonido(SND_ERROR);
 
-        if (pet.current_action == 'c' || pet.current_action == 's')
-          reproducirSonido(SND_COMER);
-        else if (pet.current_action == 'l')
-          reproducirSonido(SND_NAVEGAR);
-        else if (pet.current_action == 'm')
-          reproducirSonido(SND_CURAR);
-        else if (pet.current_action == 'd')
-          reproducirSonido(SND_ERROR);
-
-        tiempoUltimoLatido = horaActual;
+          tiempoUltimoLatido = horaActual;
+        }
       }
     }
     break;
@@ -1214,7 +1225,7 @@ void loop()
           ultimo_toque_global = horaActual;
           pet.action_start = horaActual;
 
-          // 🔒 PARCHE DE SINCRONIZACIÓN DE INTERFAZ
+          // PARCHE DE SINCRONIZACIÓN DE INTERFAZ
           // Reseteamos todos los cronómetros de la pantalla para empezar de cero
           ultimo_minuto_ms = horaActual;
           ultimo_print_hud = horaActual;

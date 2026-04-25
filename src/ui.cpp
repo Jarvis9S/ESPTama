@@ -190,18 +190,18 @@ void actualizarPantalla()
 
   // --- DIBUJAR LAS CACAS (Agrupadas a la derecha y animadas) ---
   // Solo visibles en IDLE y ACCIONES para no manchar menús
-  // Solo se ven las cacas si la luz está encendida
+  // Solo se ven las cacas si la luz está encendida y NO estamos limpiando
   if ((pet.estado_actual == ESTADO_IDLE || pet.estado_actual == ESTADO_ACCION) && pet.is_light_on)
   {
-    const unsigned char *frame_caca = frame_animation ? epd_bitmap_poop_1 : epd_bitmap_poop_0;
-    if (pet.poop_counter >= 1)
-      display.drawBitmap(105, 30, frame_caca, 16, 16, WHITE);
-    if (pet.poop_counter >= 2)
-      display.drawBitmap(87, 30, frame_caca, 16, 16, WHITE);
-    if (pet.poop_counter >= 3)
-      display.drawBitmap(105, 18, frame_caca, 16, 16, WHITE);
-    if (pet.poop_counter >= 4)
-      display.drawBitmap(87, 18, frame_caca, 16, 16, WHITE);
+    // 🔒 ARREGLO: Ocultamos los dibujos estáticos si la acción es limpiar ('l')
+    if (pet.current_action != 'l') 
+    {
+        const unsigned char *frame_caca = frame_animation ? epd_bitmap_poop_1 : epd_bitmap_poop_0;
+        if (pet.poop_counter >= 1) display.drawBitmap(105, 30, frame_caca, 16, 16, WHITE);
+        if (pet.poop_counter >= 2) display.drawBitmap(87, 30, frame_caca, 16, 16, WHITE);
+        if (pet.poop_counter >= 3) display.drawBitmap(105, 18, frame_caca, 16, 16, WHITE);
+        if (pet.poop_counter >= 4) display.drawBitmap(87, 18, frame_caca, 16, 16, WHITE);
+    }
   }
 
   // EL CONTENIDO DINÁMICO (Depende del estado)
@@ -258,7 +258,7 @@ void actualizarPantalla()
     // --- VERSIÓN ---
     display.setTextSize(1);
     display.setCursor(100, 2);
-    display.print("V.b1");
+    display.print("V.b1.1");
   }
   else if (pet.estado_actual == ESTADO_BOOT)
   {
@@ -315,7 +315,8 @@ void actualizarPantalla()
         if (pet.health_status == 1)
         {
           // Mascota enferma (Usa pet.x y pet.y que el motor ha fijado en el centro)
-          display.drawBitmap(pet.x, pet.y, frame_animation ? epd_bitmap_a1_1_sad : epd_bitmap_a1_2, 32, 32, WHITE);
+          const unsigned char *sick_frame = frame_animation ? obtenerSpriteTriste() : obtenerSpriteBase();
+          display.drawBitmap(pet.x, pet.y, sick_frame, 32, 32, WHITE);
 
           // --- CALAVERA A LA IZQUIERDA ---
           // Aleada de la zona de cacas (X=25) y atada a la Y de la mascota
@@ -431,31 +432,32 @@ void actualizarPantalla()
     }
     else if (pet.current_action == 'l') // Animación: Limpiar
     {
-      int draw_x = pet.x;
-      int sweep_x = 128 - (elapsed * 146 / 3000);
+      long elapsed = millis() - pet.action_start;
 
-      // Efecto arrastre: Si la escoba choca con la mascota, la empuja
-      if (sweep_x < draw_x + 24)
+      if (elapsed < 2000) // FASE 1: BARRIDO DINÁMICO (0s a 2s)
       {
-        draw_x = sweep_x - 24;
-        if (draw_x < 4)
-          draw_x = 4; // Límite de la pared izquierda
-      }
+        // La escoba cruza de derecha a izquierda (128 a -32)
+        int sweep_x = 128 - (elapsed * 160 / 2000); 
+        
+        // La mascota mantiene su posición original (pet.x) 
+        // hasta que la escoba (sweep_x) la alcanza.
+        int draw_x = (sweep_x < pet.x + 24) ? (sweep_x - 24) : pet.x;
 
-      const unsigned char *pet_frame;
-      if (elapsed < 2500)
-      {
-        // Durante la limpieza alterna frames base (o uno triste si prefieres)
-        pet_frame = frame_animation ? obtenerSpriteBase() : obtenerSpriteTriste();
+        display.drawBitmap(draw_x, pet.y, obtenerSpriteBase(), 32, 32, WHITE);
+        display.drawBitmap(sweep_x, 16, epd_bitmap_clean_lines, 18, 32, WHITE);
+        
+        // Las cacas se desplazan junto a la escoba
+        int offset_caca = sweep_x - 128;
+        if (pet.poop_counter >= 1) display.drawBitmap(105 + offset_caca, 30, epd_bitmap_poop_0, 16, 16, WHITE);
+        if (pet.poop_counter >= 2) display.drawBitmap(87 + offset_caca, 30, epd_bitmap_poop_0, 16, 16, WHITE);
+        if (pet.poop_counter >= 3) display.drawBitmap(105 + offset_caca, 18, epd_bitmap_poop_0, 16, 16, WHITE);
+        if (pet.poop_counter >= 4) display.drawBitmap(87 + offset_caca, 18, epd_bitmap_poop_0, 16, 16, WHITE);
       }
-      else
+      else // FASE 2: CELEBRACIÓN (2s a 5s)
       {
-        // Solo sonríe al final del todo
-        pet_frame = obtenerSpriteFeliz();
+        const unsigned char *happy_frame = frame_animation ? obtenerSpriteFeliz() : obtenerSpriteBase();
+        display.drawBitmap(48, 16, happy_frame, 32, 32, WHITE);
       }
-
-      display.drawBitmap(draw_x, pet.y, pet_frame, 32, 32, WHITE);
-      display.drawBitmap(sweep_x, 16, epd_bitmap_clean_lines, 18, 32, WHITE);
     }
     else if (pet.current_action == 'c' || pet.current_action == 's') // Animación: Comer
     {
@@ -477,7 +479,7 @@ void actualizarPantalla()
       display.drawBitmap(48, 16, obtenerSpriteTriste(), 32, 32, WHITE);
 
       int y_disc = 16 + (frame_animation ? -2 : 0);
-      display.drawBitmap(85, y_disc, epd_bitmap_menu16_discipline_1, 16, 16, WHITE);
+      display.drawBitmap(25, y_disc, epd_bitmap_menu16_discipline_1, 16, 16, WHITE);
     }
   }
   else if (pet.estado_actual == ESTADO_SUBMENU_COMIDA)
